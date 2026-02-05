@@ -1,6 +1,6 @@
 # PillSleepTracker Pro
 
-A premium floating desktop widget for medication tracking and sleep analytics. Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-on-top, and visually polished with a GitHub-Dark inspired theme.
+Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-on-top.
 
 ## Features
 
