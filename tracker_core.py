@@ -212,6 +212,86 @@ def import_tracker_csv(path: str | Path) -> dict[str, Any]:
     return normalize_tracker_data(imported)
 
 
+def _fhir_identifier(value: Any, fallback: str) -> str:
+    identifier = re.sub(r"[^A-Za-z0-9.-]+", "-", str(value or "")).strip(".-")
+    return identifier or fallback
+
+
+def build_fhir_bundle(
+    medications: Sequence[Mapping[str, Any]],
+    sleep_entries: Sequence[Mapping[str, Any]],
+    profile: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a small FHIR R4 collection for clinician interoperability."""
+
+    profile_id = _fhir_identifier((profile or {}).get("id"), "default")
+    profile_name = str((profile or {}).get("name") or "Default")
+    subject = {"reference": f"Patient/{profile_id}", "display": profile_name}
+    entries: list[dict[str, Any]] = []
+    for index, medication in enumerate(medications, 1):
+        medication_id = _fhir_identifier(medication.get("id"), f"medication-{index}")
+        dosage_parts = [str(medication.get("dosage", "")).strip(), str(medication.get("frequency", "")).strip()]
+        if medication.get("schedule_times"):
+            dosage_parts.append("at " + ", ".join(str(value) for value in medication["schedule_times"]))
+        dosage_text = " ".join(part for part in dosage_parts if part)
+        resource: dict[str, Any] = {
+            "resourceType": "MedicationStatement",
+            "id": medication_id,
+            "status": "active" if medication.get("active", True) else "stopped",
+            "subject": subject,
+            "medicationCodeableConcept": {"text": str(medication.get("name", "Medication"))},
+        }
+        if dosage_text:
+            resource["dosage"] = [{"text": dosage_text}]
+        if medication.get("clinician"):
+            resource["informationSource"] = {"display": str(medication["clinician"])}
+        entries.append({"fullUrl": f"urn:uuid:{medication_id}", "resource": resource})
+
+    for index, sleep in enumerate(sleep_entries, 1):
+        sleep_id = _fhir_identifier(sleep.get("id"), f"sleep-{index}")
+        is_nap = bool(sleep.get("is_nap"))
+        observation: dict[str, Any] = {
+            "resourceType": "Observation",
+            "id": sleep_id,
+            "status": "final",
+            "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "activity", "display": "Activity"}]}],
+            "code": {"text": "Sleep duration (nap)" if is_nap else "Sleep duration"},
+            "subject": subject,
+            "effectiveDateTime": str(sleep.get("date", sleep.get("logged_at", "")))[:10],
+            "valueQuantity": {"value": float(sleep.get("duration_min", 0)), "unit": "min", "system": "http://unitsofmeasure.org", "code": "min"},
+        }
+        components: list[dict[str, Any]] = []
+        if sleep.get("quality") is not None:
+            components.append({"code": {"text": "Sleep quality"}, "valueInteger": int(sleep["quality"])})
+        if sleep.get("score") is not None:
+            components.append({"code": {"text": "Sleep score"}, "valueInteger": int(sleep["score"])})
+        for stage, minutes in (sleep.get("stages") or {}).items():
+            components.append({"code": {"text": f"Sleep stage: {stage}"}, "valueQuantity": {"value": float(minutes), "unit": "min", "system": "http://unitsofmeasure.org", "code": "min"}})
+        if components:
+            observation["component"] = components
+        if sleep.get("notes"):
+            observation["note"] = [{"text": str(sleep["notes"])}]
+        entries.append({"fullUrl": f"urn:uuid:{sleep_id}", "resource": observation})
+    return {
+        "resourceType": "Bundle",
+        "type": "collection",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "total": len(entries),
+        "entry": entries,
+    }
+
+
+def export_fhir_bundle(
+    path: str | Path,
+    medications: Sequence[Mapping[str, Any]],
+    sleep_entries: Sequence[Mapping[str, Any]],
+    profile: Mapping[str, Any] | None = None,
+) -> Path:
+    destination = Path(path)
+    destination.write_text(json.dumps(build_fhir_bundle(medications, sleep_entries, profile), indent=2, ensure_ascii=False), encoding="utf-8")
+    return destination
+
+
 def _as_date(value: date | datetime | str | None, fallback: date | None = None) -> date:
     if isinstance(value, datetime):
         return value.date()

@@ -8,6 +8,7 @@ All notable changes to PillSleepTracker will be documented in this file.
 - Added Fitbit/Garmin/Oura sleep CSV import, REM/deep/light staging, bedtime coaching, distinct naps, and MEQ chronotype weighting.
 - Added offline interaction screening, prescribing clinician and reference-photo fields, refill and dose-change history, and optional PIN-protected household profiles.
 - Added optional passphrase-protected AES-GCM storage and lossless full JSON/CSV backup restore.
+- Added active-profile FHIR R4 JSON export with MedicationStatement and sleep Observation resources.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
 

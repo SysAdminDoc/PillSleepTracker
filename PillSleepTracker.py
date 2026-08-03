@@ -75,6 +75,7 @@ from tracker_core import (
     dose_status,
     due_doses as scheduled_due_doses,
     encrypt_json_payload,
+    export_fhir_bundle,
     export_monthly_adherence_pdf,
     export_tracker_csv,
     latest_dose_action,
@@ -214,6 +215,7 @@ class DataManager:
         if not any(p.get("id")==self.profile_id for p in self.data["profiles"]): self.settings["active_profile_id"]="default"
         self.save_data(); self.save_settings(); return self.data
     def export_csv(self, path): return export_tracker_csv(path,self.data)
+    def export_fhir(self, path): return export_fhir_bundle(path,self.meds,self.sleep_entries,self.profile)
     def import_csv(self, path):
         self.data=import_tracker_csv(path)
         if not any(p.get("id")==self.profile_id for p in self.data["profiles"]): self.settings["active_profile_id"]="default"
@@ -1198,6 +1200,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
         self._sect("Data Management")
         for txt,cmd,clr in [("Export Data (JSON)",self._exp,T.BLUE),("Export Pill Log (CSV)",self._csv,T.BLUE),
                              ("Export Full Backup (CSV)",self._csv_full,T.TEAL),
+                             ("Export FHIR Bundle (JSON)",self._fhir,T.PURPLE),
                              ("Export Monthly Adherence (PDF)",self._pdf,T.PURPLE),
                              ("Import Data (JSON)",self._imp,T.BLUE),("Import Full Backup (CSV)",self._imp_csv,T.TEAL),
                              ("Open Data Folder",self._folder,T.TEXT_SEC)]:
@@ -1291,6 +1294,12 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _csv_full(self):
         fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".csv",filetypes=[("CSV","*.csv")],initialfile="pillsleep_backup.csv")
         if fp: export_tracker_csv(fp,self.dm.data); messagebox.showinfo("Done",f"Full backup exported to:\n{fp}",parent=self.winfo_toplevel())
+    def _fhir(self):
+        fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".json",filetypes=[("FHIR JSON","*.json")],initialfile="pillsleep_fhir_bundle.json")
+        if fp:
+            try:
+                self.dm.export_fhir(fp); messagebox.showinfo("Done","FHIR bundle exported for the active profile.",parent=self.winfo_toplevel())
+            except Exception as exc: messagebox.showerror("FHIR export failed",str(exc),parent=self.winfo_toplevel())
     def _pdf(self):
         now=datetime.now()
         fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".pdf",

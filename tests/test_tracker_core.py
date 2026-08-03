@@ -7,6 +7,7 @@ from tracker_core import (
     bedtime_consistency_coach,
     calculate_sleep_score,
     check_interactions,
+    build_fhir_bundle,
     decrypt_json_payload,
     dose_status,
     due_doses,
@@ -174,3 +175,19 @@ def test_full_csv_backup_preserves_typed_records(tmp_path):
     assert restored["medications"][0]["name"] == "Vitamin D"
     assert restored["med_log"][0]["action"] == "taken"
     assert restored["sleep_log"][0]["duration_min"] == 480
+
+
+def test_fhir_bundle_contains_medication_and_sleep_resources():
+    bundle = build_fhir_bundle(
+        [{"id": "med-1", "name": "Vitamin D", "dosage": "1000 IU", "frequency": "Daily", "active": True}],
+        [{"id": "sleep-1", "date": "2026-08-03", "duration_min": 480, "quality": 4, "score": 87, "stages": {"deep": 100}}],
+        {"id": "profile-1", "name": "Alex"},
+    )
+    assert bundle["resourceType"] == "Bundle"
+    assert bundle["total"] == 2
+    medication, observation = [entry["resource"] for entry in bundle["entry"]]
+    assert medication["resourceType"] == "MedicationStatement"
+    assert medication["subject"]["reference"] == "Patient/profile-1"
+    assert observation["resourceType"] == "Observation"
+    assert observation["valueQuantity"]["unit"] == "min"
+    assert {component["code"]["text"] for component in observation["component"]} == {"Sleep quality", "Sleep score", "Sleep stage: deep"}

@@ -52,6 +52,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - Export data as JSON backup
 - Export pill log as CSV
 - Export/import a lossless full CSV backup
+- Export the active profile as a clinician-ready FHIR R4 JSON collection (MedicationStatement + sleep Observation resources)
 - Import data from JSON (supports v1 format migration)
 - Open data folder shortcut
 - Reset all data (danger zone)
@@ -161,6 +162,8 @@ If you have data from the original PillSleepTracker (v1), use Settings > Import 
 - Preserving all `sleep_log` entries
 
 The full CSV backup uses typed JSON records inside CSV rows so profiles, medication metadata, dose actions, and sleep-stage fields survive a CSV round trip. It is intended for backup/restore, while the shorter Pill Log CSV remains human-readable.
+
+Settings > Export FHIR Bundle creates a FHIR R4 collection for the active profile only, keeping household profiles separate. It includes medication statements and sleep observations; review the generated file before sending it to a clinician or health system.
 
 ## License
 
