@@ -2,10 +2,14 @@ from datetime import date, datetime, timedelta
 
 from tracker_core import (
     adherence_for_day,
+    bedtime_consistency_coach,
+    calculate_sleep_score,
     dose_status,
     due_doses,
     export_monthly_adherence_pdf,
+    import_wearable_csv,
     reorder_alerts,
+    score_chronotype,
     scheduled_doses_for_date,
 )
 
@@ -80,3 +84,45 @@ def test_monthly_pdf_export(tmp_path):
     )
     assert path.exists()
     assert path.read_bytes().startswith(b"%PDF")
+
+
+def test_wearable_import_normalizes_fitbit_and_garmin_stages(tmp_path):
+    fitbit = tmp_path / "fitbit.csv"
+    fitbit.write_text(
+        "Sleep Date,Start Time,End Time,Minutes Asleep,Sleep Quality\n"
+        "2026-08-03,08/02/2026 10:30 PM,08/03/2026 06:30 AM,480,Good\n",
+        encoding="utf-8",
+    )
+    fitbit_entries = import_wearable_csv(fitbit)
+    assert fitbit_entries[0]["source"] == "fitbit"
+    assert fitbit_entries[0]["duration_min"] == 480
+    assert fitbit_entries[0]["quality"] == 4
+
+    garmin = tmp_path / "garmin.csv"
+    garmin.write_text(
+        "calendarDate,sleepStartTimestampGMT,sleepEndTimestampGMT,deepSleepSeconds,lightSleepSeconds,remSleepSeconds\n"
+        "2026-08-03,2026-08-02T22:00:00,2026-08-03T06:00:00,7200,14400,7200\n",
+        encoding="utf-8",
+    )
+    garmin_entries = import_wearable_csv(garmin)
+    assert garmin_entries[0]["source"] == "garmin"
+    assert garmin_entries[0]["stages"] == {"rem": 120, "deep": 120, "light": 240}
+
+
+def test_bedtime_coach_ignores_naps_and_meq_changes_weights():
+    entries = [
+        {"date": "2026-08-03", "bedtime": "22:00", "is_nap": False},
+        {"date": "2026-08-02", "bedtime": "22:20", "is_nap": False},
+        {"date": "2026-08-01", "bedtime": "22:10", "is_nap": False},
+        {"date": "2026-08-03", "bedtime": "13:00", "is_nap": True},
+    ]
+    coach = bedtime_consistency_coach(entries, today="2026-08-03")
+    assert coach["sample_count"] == 3
+    assert coach["target_bedtime"] == "22:10"
+    assert "Strong rhythm" in coach["recommendation"]
+
+    assert score_chronotype([5, 5, 5, 5, 5])["category"] == "Morning"
+    assert score_chronotype([1, 1, 1, 1, 1])["category"] == "Evening"
+    morning_score = calculate_sleep_score(360, 3, ["22:00", "22:10", "22:05"], "Morning")
+    intermediate_score = calculate_sleep_score(360, 3, ["22:00", "22:10", "22:05"], "Intermediate")
+    assert morning_score != intermediate_score

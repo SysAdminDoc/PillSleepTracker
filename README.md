@@ -28,6 +28,8 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - Notes field for each entry
 - **Sleep Score** (0-100) calculated from duration, quality, and bedtime consistency
 - Recent entries list with colour-coded quality and score
+- Fitbit, Garmin, and Oura CSV import with REM/deep/light stage summaries
+- Bedtime consistency coaching, distinct nap logging, and a five-question MEQ chronotype profile
 
 ### Analytics (Stats)
 - Summary stat cards: Avg Sleep, Avg Quality, Adherence %, Avg Score

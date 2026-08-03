@@ -66,13 +66,18 @@ from matplotlib.figure import Figure
 from tracker_core import (
     adherence_for_day,
     adherence_rows,
+    bedtime_consistency_coach,
+    calculate_sleep_score,
     dose_status,
     due_doses as scheduled_due_doses,
     export_monthly_adherence_pdf,
     latest_dose_action,
+    import_wearable_csv,
+    MEQ_QUESTIONS,
     normalize_schedule_times,
     reorder_alerts as forecast_reorder_alerts,
     scheduled_doses_for_date,
+    score_chronotype,
 )
 
 try:
@@ -259,18 +264,32 @@ class DataManager:
         return export_monthly_adherence_pdf(path,self.meds,self.data["med_log"],year,month)
 
     def log_sleep(self, entry):
+        entry.setdefault("id",str(uuid.uuid4()))
         entry.setdefault("logged_at",datetime.now().isoformat())
-        self.data["sleep_log"]=[s for s in self.data["sleep_log"] if s["date"]!=entry["date"]]
+        entry.setdefault("is_nap",False)
+        if entry.get("is_nap"):
+            self.data["sleep_log"]=[s for s in self.data["sleep_log"] if s.get("id")!=entry.get("id")]
+        else:
+            self.data["sleep_log"]=[s for s in self.data["sleep_log"] if s.get("date")!=entry["date"] or s.get("is_nap",False)]
         self.data["sleep_log"].append(entry); self.save_data()
     def get_sleep(self, d):
         for s in self.data["sleep_log"]:
-            if s["date"]==d: return s
+            if s.get("date")==d and not s.get("is_nap",False): return s
         return None
     def sleep_for_range(self, days=14):
         r=[]
         for i in range(days-1,-1,-1):
             d=(datetime.now()-timedelta(days=i)).strftime("%Y-%m-%d"); r.append((d,self.get_sleep(d)))
         return r
+    def import_sleep_csv(self, path, provider=None):
+        entries=import_wearable_csv(path,provider)
+        existing={(s.get("source"),s.get("source_id")) for s in self.data["sleep_log"] if s.get("source")}
+        added=0
+        for entry in entries:
+            if (entry.get("source"),entry.get("source_id")) in existing:
+                continue
+            self.log_sleep(entry); added+=1
+        return added,len(entries)
 
     def pill_streak(self):
         if not self.meds: return 0
@@ -292,22 +311,8 @@ class DataManager:
         return streak
 
     @staticmethod
-    def calc_sleep_score(dur_min, quality, recent_bedtimes=None):
-        dur_s=40*math.exp(-0.5*((dur_min-480)/90)**2)
-        qual_s=min(quality,5)*8
-        con_s=10
-        if recent_bedtimes and len(recent_bedtimes)>=3:
-            mins=[]
-            for bt in recent_bedtimes:
-                try:
-                    h,m=map(int,bt.split(":")); t=h*60+m
-                    if t>720: t-=1440
-                    mins.append(t)
-                except: pass
-            if len(mins)>=3:
-                mean=sum(mins)/len(mins); var=sum((x-mean)**2 for x in mins)/len(mins)
-                con_s=max(0,20-var**0.5/6)
-        return int(min(100,max(0,dur_s+qual_s+con_s)))
+    def calc_sleep_score(dur_min, quality, recent_bedtimes=None, chronotype=None):
+        return calculate_sleep_score(dur_min,quality,recent_bedtimes,chronotype)
 
 # ==============================================================================
 #  SECTION 5 : CUSTOM WIDGETS
@@ -756,7 +761,13 @@ class SleepPage(ctk.CTkScrollableFrame):
                          scrollbar_button_hover_color=T.TEXT_MUTED,**kw)
         self.dm=dm; self.toast=toast; self._build()
     def _build(self):
-        ctk.CTkLabel(self,text="Sleep Tracker",font=ctk.CTkFont(size=20,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
+        hdr=ctk.CTkFrame(self,fg_color="transparent"); hdr.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
+        ctk.CTkLabel(hdr,text="Sleep Tracker",font=ctk.CTkFont(size=20,weight="bold"),text_color=T.TEXT).pack(side="left")
+        ctk.CTkButton(hdr,text="Import CSV",width=96,height=30,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+                       hover_color=T.HOVER,text_color=T.BLUE,border_width=1,border_color=T.BORDER,
+                       command=self._import_csv).pack(side="right")
+        self._coach=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER)
+        self._coach.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
         # Quick presets
         pf=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER); pf.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
         ctk.CTkLabel(pf,text="Quick Log (ending now)",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,4))
@@ -765,6 +776,11 @@ class SleepPage(ctk.CTkScrollableFrame):
             ctk.CTkButton(pr,text=f"{h}h",width=50,height=32,font=ctk.CTkFont(size=12,weight="bold"),
                            fg_color=T.SURFACE,hover_color=T.HOVER,text_color=T.PURPLE,border_width=1,border_color=T.BORDER,
                            command=lambda hrs=h:self._quick(hrs)).pack(side="left",padx=2,expand=True,fill="x")
+        nr=ctk.CTkFrame(pf,fg_color="transparent"); nr.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
+        ctk.CTkLabel(nr,text="Nap",font=ctk.CTkFont(size=11,weight="bold"),text_color=T.TEXT_SEC).pack(side="left",padx=(0,6))
+        for minutes in (20,30,60):
+            ctk.CTkButton(nr,text=f"{minutes}m",width=58,height=26,font=ctk.CTkFont(size=10),fg_color=T.SURFACE,
+                          hover_color=T.HOVER,text_color=T.TEAL,command=lambda mins=minutes:self._quick_nap(mins)).pack(side="left",padx=2)
         # Manual form
         fm=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER); fm.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
         ctk.CTkLabel(fm,text="Manual Entry",font=ctk.CTkFont(size=13,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,4))
@@ -782,6 +798,9 @@ class SleepPage(ctk.CTkScrollableFrame):
         self.wh=ctk.CTkOptionMenu(wr,values=[f"{h:02d}" for h in range(24)],width=60,fg_color=T.INPUT_BG,button_color=T.BORDER,dropdown_fg_color=T.SURFACE); self.wh.set("06"); self.wh.pack(side="left",padx=2)
         ctk.CTkLabel(wr,text=":",text_color=T.TEXT_MUTED).pack(side="left")
         self.wm=ctk.CTkOptionMenu(wr,values=[f"{m:02d}" for m in range(0,60,5)],width=60,fg_color=T.INPUT_BG,button_color=T.BORDER,dropdown_fg_color=T.SURFACE); self.wm.set("00"); self.wm.pack(side="left",padx=2)
+        self.napv=ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(fm,text="This is a nap",variable=self.napv,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,
+                      fg_color=T.BORDER,progress_color=T.TEAL,button_color=T.TEXT,button_hover_color=T.BLUE).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,0))
         # Quality
         qr=_tr("Quality:"); self.qv=tk.IntVar(value=4)
         self._ql=ctk.CTkLabel(qr,text="Good",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.GREEN,width=70); self._ql.pack(side="right")
@@ -807,10 +826,15 @@ class SleepPage(ctk.CTkScrollableFrame):
 
     def _qc(self,val):
         q=int(round(val)); self.qv.set(q); self._ql.configure(text=QUALITY_LABELS.get(q,""),text_color=QUALITY_COLOURS.get(q,T.TEXT))
+    def _quick_nap(self,minutes):
+        now=datetime.now(); bed=now-timedelta(minutes=minutes)
+        self.dm.log_sleep({"date":now.strftime("%Y-%m-%d"),"bedtime":bed.strftime("%H:%M"),"waketime":now.strftime("%H:%M"),
+                           "duration_min":minutes,"quality":4,"factors":["Nap"],"notes":f"Quick nap: {minutes}m","score":None,"is_nap":True})
+        self.toast.show(f"Logged {minutes}m nap","success"); self.refresh()
     def _quick(self,hours):
         now=datetime.now(); bed=now-timedelta(hours=hours)
         rbt=[s.get("bedtime") for _,s in self.dm.sleep_for_range(7) if s]
-        sc=DataManager.calc_sleep_score(hours*60,4,rbt)
+        sc=DataManager.calc_sleep_score(hours*60,4,rbt,self.dm.settings.get("chronotype"))
         self.dm.log_sleep({"date":now.strftime("%Y-%m-%d"),"bedtime":bed.strftime("%H:%M"),"waketime":now.strftime("%H:%M"),
                            "duration_min":hours*60,"quality":4,"factors":[],"notes":f"Quick: {hours}h","score":sc})
         self.toast.show(f"Logged {hours}h  |  Score: {sc}","success"); self.refresh()
@@ -820,23 +844,48 @@ class SleepPage(ctk.CTkScrollableFrame):
         if dur<=0 or dur>1080: messagebox.showwarning("Invalid","Check your times.",parent=self.winfo_toplevel()); return
         q=self.qv.get(); fcts=[f for f,v in self._fvars.items() if v.get()]; notes=self.ntb.get("1.0","end").strip()
         rbt=[s.get("bedtime") for _,s in self.dm.sleep_for_range(7) if s]
-        sc=DataManager.calc_sleep_score(dur,q,rbt)
+        sc=DataManager.calc_sleep_score(dur,q,rbt,self.dm.settings.get("chronotype"))
         self.dm.log_sleep({"date":ds,"bedtime":f"{bhv:02d}:{bmv:02d}","waketime":f"{whv:02d}:{wmv:02d}",
-                           "duration_min":dur,"quality":q,"factors":fcts,"notes":notes,"score":sc})
+                           "duration_min":dur,"quality":q,"factors":fcts,"notes":notes,"score":sc,"is_nap":self.napv.get()})
         self.toast.show(f"Sleep logged!  Score: {sc}/100","success"); self.ntb.delete("1.0","end")
         for v in self._fvars.values(): v.set(False)
+        self.napv.set(False)
         self.refresh()
+    def _import_csv(self):
+        fp=filedialog.askopenfilename(parent=self.winfo_toplevel(),filetypes=[("Sleep CSV","*.csv"),("All files","*.*")])
+        if not fp: return
+        try:
+            added,total=self.dm.import_sleep_csv(fp)
+            self.toast.show(f"Imported {added} of {total} sleep entries","success"); self.refresh()
+        except Exception as exc:
+            messagebox.showerror("Import failed",str(exc),parent=self.winfo_toplevel())
+    def _refresh_coach(self):
+        for w in self._coach.winfo_children(): w.destroy()
+        coach=bedtime_consistency_coach(self.dm.data["sleep_log"])
+        row=ctk.CTkFrame(self._coach,fg_color="transparent"); row.pack(fill="x",padx=T.PAD_MD,pady=T.PAD_SM)
+        left=ctk.CTkFrame(row,fg_color="transparent"); left.pack(side="left",fill="x",expand=True)
+        ctk.CTkLabel(left,text="Bedtime coach",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEAL).pack(anchor="w")
+        ctk.CTkLabel(left,text=coach["recommendation"],font=ctk.CTkFont(size=10),text_color=T.TEXT_SEC,wraplength=360,justify="left").pack(anchor="w",pady=(2,0))
+        if coach.get("target_bedtime"):
+            ctk.CTkLabel(row,text=coach["target_bedtime"],font=ctk.CTkFont(size=18,weight="bold"),text_color=T.TEAL).pack(side="right")
     def refresh(self):
+        self._refresh_coach()
         for w in self._hf.winfo_children(): w.destroy()
         entries=sorted(self.dm.data["sleep_log"],key=lambda s:s["date"],reverse=True)[:10]
         if not entries: ctk.CTkLabel(self._hf,text="No entries yet.",font=ctk.CTkFont(size=12),text_color=T.TEXT_MUTED).pack(pady=T.PAD_LG); return
         for s in entries:
             q=s.get("quality",3); dh,dm_=s.get("duration_min",0)//60,s.get("duration_min",0)%60; sc=s.get("score","--")
+            if sc is None: sc="--"
             row=ctk.CTkFrame(self._hf,fg_color=T.CARD,corner_radius=6,border_width=1,border_color=T.BORDER); row.pack(fill="x",pady=2)
             inn=ctk.CTkFrame(row,fg_color="transparent"); inn.pack(fill="x",padx=T.PAD_MD,pady=T.PAD_SM)
-            ctk.CTkLabel(inn,text=s["date"],width=85,font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED).pack(side="left")
+            kind="Nap  " if s.get("is_nap") else ""
+            source=f"  · {s.get('source').title()}" if s.get("source") else ""
+            ctk.CTkLabel(inn,text=f"{kind}{s['date']}{source}",width=135,font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED).pack(side="left")
             ctk.CTkLabel(inn,text=f"{dh}h {dm_}m",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT).pack(side="left",padx=T.PAD_SM)
             ctk.CTkLabel(inn,text=QUALITY_LABELS.get(q,""),font=ctk.CTkFont(size=11),text_color=QUALITY_COLOURS.get(q,T.TEXT_SEC)).pack(side="left")
+            if s.get("stages"):
+                stage_text="  ".join(f"{key.title()} {value}m" for key,value in s["stages"].items())
+                ctk.CTkLabel(inn,text=stage_text,font=ctk.CTkFont(size=9),text_color=T.TEAL).pack(side="left",padx=4)
             sc_c=T.GREEN if sc!="--" and sc>=70 else T.AMBER if sc!="--" and sc>=50 else T.RED
             ctk.CTkLabel(inn,text=f"  {sc}",font=ctk.CTkFont(size=12,weight="bold"),text_color=sc_c).pack(side="right")
         self.date_e.delete(0,"end"); self.date_e.insert(0,datetime.now().strftime("%Y-%m-%d"))
@@ -972,6 +1021,13 @@ class SettingsPage(ctk.CTkScrollableFrame):
             ctk.CTkOptionMenu(rr,values=values,width=96,fg_color=T.INPUT_BG,button_color=T.BORDER,
                               dropdown_fg_color=T.SURFACE,command=lambda v,k=key:self._rs(k,v)).set(str(self.dm.settings.get(key,values[0])))
             menu=rr.winfo_children()[-1]; menu.pack(side="right")
+        self._sect("Sleep personalization")
+        chronotype=self.dm.settings.get("chronotype","Not set")
+        self._ct_label=ctk.CTkLabel(self,text=f"Chronotype: {chronotype}",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC)
+        self._ct_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
+        ctk.CTkButton(self,text="Take 5-question MEQ quiz",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+                      hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
+                      anchor="w",command=self._quiz).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("Data Management")
         for txt,cmd,clr in [("Export Data (JSON)",self._exp,T.BLUE),("Export Pill Log (CSV)",self._csv,T.BLUE),
                              ("Export Monthly Adherence (PDF)",self._pdf,T.PURPLE),
@@ -989,6 +1045,22 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
     def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
     def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
+    def _quiz(self):
+        dlg=ctk.CTkToplevel(self.winfo_toplevel()); dlg.title("Chronotype quiz"); dlg.geometry("520x560"); dlg.configure(fg_color=T.BG); dlg.attributes("-topmost",True); dlg.grab_set()
+        sc=ctk.CTkScrollableFrame(dlg,fg_color=T.BG); sc.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
+        vars_=[]
+        for index,question in enumerate(MEQ_QUESTIONS,1):
+            ctk.CTkLabel(sc,text=f"{index}. {question['prompt']}",font=ctk.CTkFont(size=11,weight="bold"),text_color=T.TEXT,
+                          wraplength=450,justify="left").pack(anchor="w",pady=(T.PAD_SM,2))
+            labels=[label for label,_ in question["options"]]; var=ctk.StringVar(value=labels[2]); vars_.append((var,dict(question["options"])))
+            ctk.CTkOptionMenu(sc,values=labels,variable=var,fg_color=T.INPUT_BG,button_color=T.BORDER,
+                              dropdown_fg_color=T.SURFACE).pack(fill="x",pady=(0,2))
+        def _save_quiz():
+            result=score_chronotype([scores[var.get()] for var,scores in vars_])
+            self.dm.settings.update({"chronotype":result["category"],"chronotype_score":result["score"]}); self.dm.save_settings()
+            self._ct_label.configure(text=f"Chronotype: {result['category']}  ({result['score']}/5)")
+            dlg.destroy(); messagebox.showinfo("Chronotype saved",f"Profile set to {result['category']}. Future sleep scores will use this weighting.",parent=self.winfo_toplevel())
+        ctk.CTkButton(dlg,text="Save result",height=36,fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,command=_save_quiz).pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_MD))
     def _exp(self):
         fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".json",filetypes=[("JSON","*.json")],initialfile="pillsleep_backup.json")
         if fp: DataManager._write(Path(fp),self.dm.data); messagebox.showinfo("Done",f"Exported to:\n{fp}",parent=self.winfo_toplevel())
@@ -1059,7 +1131,7 @@ class PillSleepTrackerPro(ctk.CTk):
         self._autosave(); self._tray=None
         _register_toast_protocol()
         self.reminders=ReminderManager(self,self.dm,self.toast); self.reminders.start()
-        if HAS_TRAY and HAS_PIL: threading.Thread(target=self._setup_tray,daemon=True).start()
+        if HAS_TRAY and HAS_PIL and not os.environ.get("PST_TEST_MODE"): threading.Thread(target=self._setup_tray,daemon=True).start()
 
     def _build_tb(self):
         tb=ctk.CTkFrame(self,height=32,fg_color=T.TITLEBAR,corner_radius=0); tb.pack(fill="x"); tb.pack_propagate(False)

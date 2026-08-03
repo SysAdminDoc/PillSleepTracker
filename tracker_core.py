@@ -418,3 +418,269 @@ def write_csv_rows(path: str | Path, rows: Sequence[Mapping[str, Any]], fieldnam
         writer.writeheader()
         writer.writerows(rows)
     return output
+
+
+def _normalized_row(row: Mapping[str, Any]) -> dict[str, tuple[str, Any]]:
+    return {
+        re.sub(r"[^a-z0-9]", "", str(key).lower()): (str(key), value)
+        for key, value in row.items()
+    }
+
+
+def _row_value(row: Mapping[str, Any], aliases: Sequence[str]) -> tuple[Any, str]:
+    normalized = _normalized_row(row)
+    for alias in aliases:
+        item = normalized.get(re.sub(r"[^a-z0-9]", "", alias.lower()))
+        if item and str(item[1]).strip():
+            return item[1], item[0]
+    return None, ""
+
+
+def _parse_wearable_datetime(value: Any) -> datetime | None:
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    try:
+        numeric = float(text)
+        if numeric > 10_000_000_000:
+            numeric /= 1000
+        if numeric > 1_000_000_000:
+            return datetime.fromtimestamp(numeric)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        pass
+    for fmt in (
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%d/%m/%Y %H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_duration_minutes(value: Any, field_name: str = "") -> int | None:
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip().lower()
+    try:
+        number = float(text)
+        if "second" in field_name.lower() or "second" in text or number >= 10_000:
+            return max(0, round(number / 60))
+        if "hour" in field_name.lower() or "hour" in text:
+            return max(0, round(number * 60))
+        return max(0, round(number))
+    except ValueError:
+        hours = re.search(r"(\d+(?:\.\d+)?)\s*h", text)
+        minutes = re.search(r"(\d+(?:\.\d+)?)\s*m", text)
+        if hours or minutes:
+            return round(float(hours.group(1)) * 60 if hours else 0) + round(float(minutes.group(1)) if minutes else 0)
+    return None
+
+
+def _parse_quality(value: Any) -> int:
+    labels = {"terrible": 1, "very poor": 1, "poor": 2, "fair": 3, "good": 4, "excellent": 5, "very good": 5}
+    text = str(value or "").strip().lower()
+    if text in labels:
+        return labels[text]
+    try:
+        number = float(text)
+    except ValueError:
+        return 3
+    if number <= 1:
+        return max(1, min(5, round(number * 5)))
+    if number <= 5:
+        return max(1, min(5, round(number)))
+    return max(1, min(5, round(number / 20)))
+
+
+def _stage_minutes(row: Mapping[str, Any], aliases: Sequence[str]) -> int | None:
+    value, field = _row_value(row, aliases)
+    return _parse_duration_minutes(value, field) if value is not None else None
+
+
+def infer_wearable_provider(headers: Sequence[str], filename: str = "") -> str:
+    keys = {re.sub(r"[^a-z0-9]", "", header.lower()) for header in headers}
+    name = filename.lower()
+    if "calendarDate".lower() in keys or "sleepstarttimestampgmt" in keys or "garmin" in name:
+        return "garmin"
+    if "bedtimestart" in keys or "totalSleepDuration".lower() in keys or "oura" in name:
+        return "oura"
+    if "minutesasleep" in keys or "fitbit" in name:
+        return "fitbit"
+    return "wearable"
+
+
+def import_wearable_csv(path: str | Path, provider: str | None = None) -> list[dict[str, Any]]:
+    """Normalize common Fitbit, Garmin, and Oura sleep CSV exports."""
+
+    input_path = Path(path)
+    with input_path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        headers = reader.fieldnames or []
+        provider = (provider or infer_wearable_provider(headers, input_path.name)).lower()
+        entries: list[dict[str, Any]] = []
+        for index, row in enumerate(reader):
+            start_value, _ = _row_value(row, [
+                "start", "start_time", "Start Time", "sleepStartTimestampGMT", "bedtime_start", "sleep_start", "from"
+            ])
+            end_value, _ = _row_value(row, [
+                "end", "end_time", "End Time", "sleepEndTimestampGMT", "bedtime_end", "sleep_end", "to"
+            ])
+            start = _parse_wearable_datetime(start_value)
+            end = _parse_wearable_datetime(end_value)
+            date_value, _ = _row_value(row, ["date", "sleep_date", "calendarDate", "Date", "Sleep Date"])
+            day = _parse_wearable_datetime(date_value) or start
+            if not day:
+                continue
+            duration_value, duration_field = _row_value(row, [
+                "duration_min", "duration_minutes", "Minutes Asleep", "total_sleep_duration", "sleep_duration",
+                "totalSleepTime", "sleepTime", "duration", "minutes_slept"
+            ])
+            duration = _parse_duration_minutes(duration_value, duration_field)
+            if duration is None and start and end:
+                if end < start:
+                    end += timedelta(days=1)
+                duration = max(0, round((end - start).total_seconds() / 60))
+            if duration is None or duration <= 0:
+                continue
+            type_value, _ = _row_value(row, ["type", "sleep_type", "is_nap", "nap"])
+            is_nap = str(type_value or "").strip().lower() in {"nap", "true", "yes", "1"}
+            stages = {}
+            for stage, aliases in {
+                "rem": ["rem", "rem_minutes", "remSleepSeconds", "rem_sleep_duration", "remDuration"],
+                "deep": ["deep", "deep_minutes", "deepSleepSeconds", "deep_sleep_duration", "deepDuration"],
+                "light": ["light", "light_minutes", "lightSleepSeconds", "light_sleep_duration", "lightDuration"],
+            }.items():
+                value = _stage_minutes(row, aliases)
+                if value is not None:
+                    stages[stage] = value
+            quality_value, _ = _row_value(row, ["quality", "Sleep Quality", "sleep_score", "score", "efficiency"])
+            quality = _parse_quality(quality_value)
+            date_text = day.strftime("%Y-%m-%d")
+            bedtime = start.strftime("%H:%M") if start else "--"
+            waketime = end.strftime("%H:%M") if end else "--"
+            entry = {
+                "id": f"wearable:{provider}:{index}:{date_text}",
+                "date": date_text,
+                "bedtime": bedtime,
+                "waketime": waketime,
+                "duration_min": duration,
+                "quality": quality,
+                "factors": [],
+                "notes": f"Imported from {provider.title()}",
+                "score": calculate_sleep_score(duration, quality),
+                "source": provider,
+                "source_id": str(index),
+                "is_nap": is_nap,
+            }
+            if stages:
+                entry["stages"] = stages
+            entries.append(entry)
+    return entries
+
+
+def bedtime_consistency_coach(
+    entries: Sequence[Mapping[str, Any]],
+    today: date | datetime | str | None = None,
+    window_days: int = 14,
+) -> dict[str, Any]:
+    cutoff = _as_date(today) if today else datetime.now().date()
+    selected = [
+        entry for entry in entries
+        if not entry.get("is_nap") and _as_date(entry.get("date"), cutoff) <= cutoff
+    ]
+    selected = sorted(selected, key=lambda entry: str(entry.get("date", "")), reverse=True)[:max(1, window_days)]
+    minutes: list[int] = []
+    for entry in selected:
+        try:
+            hour, minute = map(int, str(entry.get("bedtime", "")).split(":")[:2])
+            value = hour * 60 + minute
+            minutes.append(value - 1440 if value > 720 else value)
+        except (TypeError, ValueError):
+            continue
+    if not minutes:
+        return {"sample_count": 0, "target_bedtime": None, "variance_minutes": None, "recommendation": "Log a few nights to unlock your bedtime coach."}
+    mean = sum(minutes) / len(minutes)
+    variance = math.sqrt(sum((value - mean) ** 2 for value in minutes) / len(minutes))
+    target = int(round(mean)) % 1440
+    target_text = f"{target // 60:02d}:{target % 60:02d}"
+    if len(minutes) < 3:
+        recommendation = f"Your early target is around {target_text}. Log {3 - len(minutes)} more night(s) for a consistency trend."
+    elif variance <= 30:
+        recommendation = f"Strong rhythm. Keep bedtime near {target_text} (±30 minutes)."
+    else:
+        recommendation = f"Bedtimes vary by about {variance:.0f} minutes. Aim for {target_text} within a 30-minute window."
+    return {
+        "sample_count": len(minutes),
+        "target_bedtime": target_text,
+        "variance_minutes": round(variance, 1),
+        "recommendation": recommendation,
+    }
+
+
+MEQ_QUESTIONS = [
+    {"prompt": "When would you feel most ready to start your day naturally?", "options": [("Before 06:30", 5), ("06:30–08:00", 4), ("08:00–09:30", 3), ("09:30–11:00", 2), ("After 11:00", 1)]},
+    {"prompt": "When is your best window for focused work?", "options": [("Early morning", 5), ("Late morning", 4), ("Afternoon", 3), ("Evening", 2), ("Late night", 1)]},
+    {"prompt": "How easy is it to wake up before 07:00?", "options": [("Very easy", 5), ("Fairly easy", 4), ("Neutral", 3), ("Somewhat difficult", 2), ("Very difficult", 1)]},
+    {"prompt": "At what time would you choose your heaviest meal?", "options": [("Before noon", 5), ("Around noon", 4), ("Early afternoon", 3), ("Evening", 2), ("Late evening", 1)]},
+    {"prompt": "When would you prefer to exercise?", "options": [("06:00–09:00", 5), ("09:00–12:00", 4), ("12:00–16:00", 3), ("16:00–20:00", 2), ("After 20:00", 1)]},
+]
+
+
+def score_chronotype(answers: Sequence[int]) -> dict[str, Any]:
+    values = [max(1, min(5, int(answer))) for answer in answers]
+    if not values:
+        return {"score": 3.0, "category": "Intermediate"}
+    average = sum(values) / len(values)
+    if average >= 4.2:
+        category = "Morning"
+    elif average >= 3.4:
+        category = "Mostly morning"
+    elif average >= 2.6:
+        category = "Intermediate"
+    elif average >= 1.8:
+        category = "Mostly evening"
+    else:
+        category = "Evening"
+    return {"score": round(average, 2), "category": category}
+
+
+def calculate_sleep_score(
+    duration_min: int,
+    quality: int,
+    recent_bedtimes: Sequence[str] | None = None,
+    chronotype: str | None = None,
+) -> int:
+    duration = math.exp(-0.5 * ((max(0, duration_min) - 480) / 90) ** 2)
+    quality_value = max(1, min(5, int(quality))) / 5
+    consistency = 0.5
+    if recent_bedtimes and len(recent_bedtimes) >= 3:
+        minutes: list[int] = []
+        for bedtime in recent_bedtimes:
+            try:
+                hour, minute = map(int, str(bedtime).split(":")[:2])
+                value = hour * 60 + minute
+                minutes.append(value - 1440 if value > 720 else value)
+            except (TypeError, ValueError):
+                continue
+        if len(minutes) >= 3:
+            deviation = math.sqrt(sum((value - sum(minutes) / len(minutes)) ** 2 for value in minutes) / len(minutes))
+            consistency = max(0, min(1, 1 - deviation / 120))
+    weights = {
+        "morning": (35, 35, 30),
+        "mostly morning": (37, 38, 25),
+        "intermediate": (40, 40, 20),
+        "mostly evening": (37, 38, 25),
+        "evening": (35, 35, 30),
+    }.get(str(chronotype or "intermediate").lower(), (40, 40, 20))
+    score = duration * weights[0] + quality_value * weights[1] + consistency * weights[2]
+    return int(min(100, max(0, round(score))))
