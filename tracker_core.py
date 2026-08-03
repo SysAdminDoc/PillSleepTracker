@@ -170,6 +170,8 @@ def normalize_tracker_data(payload: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(entry, dict):
             entry.setdefault("profile_id", "default")
             entry.setdefault("is_nap", False)
+            entry.setdefault("mood", None)
+            entry.setdefault("energy", None)
     for entry in data["audit_log"]:
         if isinstance(entry, dict):
             entry.setdefault("id", str(uuid.uuid4()))
@@ -907,6 +909,8 @@ def calculate_sleep_score(
     quality: int,
     recent_bedtimes: Sequence[str] | None = None,
     chronotype: str | None = None,
+    mood: int | None = None,
+    energy: int | None = None,
 ) -> int:
     duration = math.exp(-0.5 * ((max(0, duration_min) - 480) / 90) ** 2)
     quality_value = max(1, min(5, int(quality))) / 5
@@ -931,6 +935,10 @@ def calculate_sleep_score(
         "evening": (35, 35, 30),
     }.get(str(chronotype or "intermediate").lower(), (40, 40, 20))
     score = duration * weights[0] + quality_value * weights[1] + consistency * weights[2]
+    wellbeing = [value for value in (mood, energy) if value is not None]
+    if wellbeing:
+        wellness_value = sum(max(1, min(5, int(value))) for value in wellbeing) / len(wellbeing) / 5
+        score = score * 0.8 + wellness_value * 20
     return int(min(100, max(0, round(score))))
 
 

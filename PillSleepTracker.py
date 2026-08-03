@@ -166,6 +166,7 @@ PILL_COLOURS = {
     "Cyan":"#76e3ea","White":"#e6edf3",
 }
 QUALITY_LABELS  = {1:"Terrible",2:"Poor",3:"Fair",4:"Good",5:"Excellent"}
+WELLBEING_LABELS = {1:"Very low",2:"Low",3:"Medium",4:"Good",5:"High"}
 QUALITY_COLOURS = {1:T.RED,2:"#f0883e",3:T.AMBER,4:T.GREEN,5:T.BLUE}
 SLEEP_FACTORS   = ["Caffeine","Alcohol","Exercise","Screen Time","Stress","Nap","Late Meal","Medication"]
 
@@ -500,8 +501,8 @@ class DataManager:
         return streak
 
     @staticmethod
-    def calc_sleep_score(dur_min, quality, recent_bedtimes=None, chronotype=None):
-        return calculate_sleep_score(dur_min,quality,recent_bedtimes,chronotype)
+    def calc_sleep_score(dur_min, quality, recent_bedtimes=None, chronotype=None, mood=None, energy=None):
+        return calculate_sleep_score(dur_min,quality,recent_bedtimes,chronotype,mood,energy)
 
 # ==============================================================================
 #  SECTION 5 : CUSTOM WIDGETS
@@ -1038,6 +1039,17 @@ class SleepPage(ctk.CTkScrollableFrame):
         self._ql=ctk.CTkLabel(qr,text="Good",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.GREEN,width=70); self._ql.pack(side="right")
         self.qs=ctk.CTkSlider(qr,from_=1,to=5,number_of_steps=4,fg_color=T.BORDER,progress_color=T.PURPLE,
                                button_color=T.TEXT,button_hover_color=T.BLUE,command=self._qc); self.qs.set(4); self.qs.pack(side="left",fill="x",expand=True,padx=T.PAD_SM)
+        # Optional wellbeing signals: they gently tune the score when supplied.
+        mr=_tr("Mood:"); self.moodv=tk.IntVar(value=3)
+        self._moodl=ctk.CTkLabel(mr,text="Medium (3/5)",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEAL,width=90); self._moodl.pack(side="right")
+        self.moods=ctk.CTkSlider(mr,from_=1,to=5,number_of_steps=4,fg_color=T.BORDER,progress_color=T.TEAL,
+                                 button_color=T.TEXT,button_hover_color=T.BLUE,command=self._mood_changed)
+        self.moods.set(3); self.moods.pack(side="left",fill="x",expand=True,padx=T.PAD_SM)
+        er=_tr("Energy:"); self.energyv=tk.IntVar(value=3)
+        self._energyl=ctk.CTkLabel(er,text="Medium (3/5)",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.AMBER,width=90); self._energyl.pack(side="right")
+        self.energy=ctk.CTkSlider(er,from_=1,to=5,number_of_steps=4,fg_color=T.BORDER,progress_color=T.AMBER,
+                                  button_color=T.TEXT,button_hover_color=T.BLUE,command=self._energy_changed)
+        self.energy.set(3); self.energy.pack(side="left",fill="x",expand=True,padx=T.PAD_SM)
         # Factors
         ctk.CTkLabel(fm,text="Factors:",font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,2))
         fg=ctk.CTkFrame(fm,fg_color="transparent"); fg.pack(fill="x",padx=T.PAD_MD,pady=(0,4))
@@ -1058,6 +1070,10 @@ class SleepPage(ctk.CTkScrollableFrame):
 
     def _qc(self,val):
         q=int(round(val)); self.qv.set(q); self._ql.configure(text=QUALITY_LABELS.get(q,""),text_color=QUALITY_COLOURS.get(q,T.TEXT))
+    def _mood_changed(self,val):
+        value=int(round(val)); self.moodv.set(value); self._moodl.configure(text=f"{WELLBEING_LABELS.get(value,'')} ({value}/5)")
+    def _energy_changed(self,val):
+        value=int(round(val)); self.energyv.set(value); self._energyl.configure(text=f"{WELLBEING_LABELS.get(value,'')} ({value}/5)")
     def _quick_nap(self,minutes):
         now=datetime.now(); bed=now-timedelta(minutes=minutes)
         self.dm.log_sleep({"date":now.strftime("%Y-%m-%d"),"bedtime":bed.strftime("%H:%M"),"waketime":now.strftime("%H:%M"),
@@ -1076,12 +1092,15 @@ class SleepPage(ctk.CTkScrollableFrame):
         if dur<=0 or dur>1080: messagebox.showwarning("Invalid","Check your times.",parent=self.winfo_toplevel()); return
         q=self.qv.get(); fcts=[f for f,v in self._fvars.items() if v.get()]; notes=self.ntb.get("1.0","end").strip()
         rbt=[s.get("bedtime") for _,s in self.dm.sleep_for_range(7) if s]
-        sc=DataManager.calc_sleep_score(dur,q,rbt,self.dm.settings.get("chronotype"))
+        mood=self.moodv.get(); energy=self.energyv.get()
+        sc=DataManager.calc_sleep_score(dur,q,rbt,self.dm.settings.get("chronotype"),mood,energy)
         self.dm.log_sleep({"date":ds,"bedtime":f"{bhv:02d}:{bmv:02d}","waketime":f"{whv:02d}:{wmv:02d}",
-                           "duration_min":dur,"quality":q,"factors":fcts,"notes":notes,"score":sc,"is_nap":self.napv.get()})
+                           "duration_min":dur,"quality":q,"mood":mood,"energy":energy,"factors":fcts,"notes":notes,"score":sc,"is_nap":self.napv.get()})
         self.toast.show(f"Sleep logged!  Score: {sc}/100","success"); self.ntb.delete("1.0","end")
         for v in self._fvars.values(): v.set(False)
         self.napv.set(False)
+        self.moodv.set(3); self.moods.set(3); self.energyv.set(3); self.energy.set(3)
+        self._mood_changed(3); self._energy_changed(3)
         self.refresh()
     def _import_csv(self):
         fp=filedialog.askopenfilename(parent=self.winfo_toplevel(),filetypes=[("Sleep CSV","*.csv"),("All files","*.*")])
@@ -1115,6 +1134,8 @@ class SleepPage(ctk.CTkScrollableFrame):
             ctk.CTkLabel(inn,text=f"{kind}{s['date']}{source}",width=135,font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED).pack(side="left")
             ctk.CTkLabel(inn,text=f"{dh}h {dm_}m",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT).pack(side="left",padx=T.PAD_SM)
             ctk.CTkLabel(inn,text=QUALITY_LABELS.get(q,""),font=ctk.CTkFont(size=11),text_color=QUALITY_COLOURS.get(q,T.TEXT_SEC)).pack(side="left")
+            wellbeing="  |  ".join(f"{label} {s[key]}/5" for label,key in (("Mood","mood"),("Energy","energy")) if s.get(key) is not None)
+            if wellbeing: ctk.CTkLabel(inn,text=wellbeing,font=ctk.CTkFont(size=9),text_color=T.TEAL).pack(side="left",padx=4)
             if s.get("stages"):
                 stage_text="  ".join(f"{key.title()} {value}m" for key,value in s["stages"].items())
                 ctk.CTkLabel(inn,text=stage_text,font=ctk.CTkFont(size=9),text_color=T.TEAL).pack(side="left",padx=4)

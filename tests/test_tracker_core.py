@@ -137,6 +137,9 @@ def test_bedtime_coach_ignores_naps_and_meq_changes_weights():
     morning_score = calculate_sleep_score(360, 3, ["22:00", "22:10", "22:05"], "Morning")
     intermediate_score = calculate_sleep_score(360, 3, ["22:00", "22:10", "22:05"], "Intermediate")
     assert morning_score != intermediate_score
+    neutral_score = calculate_sleep_score(480, 4, ["22:00", "22:10", "22:05"], "Intermediate")
+    assert calculate_sleep_score(480, 4, ["22:00", "22:10", "22:05"], "Intermediate", 1, 1) < neutral_score
+    assert calculate_sleep_score(480, 4, ["22:00", "22:10", "22:05"], "Intermediate", 5, 5) > neutral_score
 
 
 def test_offline_interaction_screen_requires_distinct_drug_matches():
@@ -175,6 +178,12 @@ def test_full_csv_backup_preserves_typed_records(tmp_path):
     assert restored["medications"][0]["name"] == "Vitamin D"
     assert restored["med_log"][0]["action"] == "taken"
     assert restored["sleep_log"][0]["duration_min"] == 480
+
+
+def test_sleep_mood_and_energy_migrate_with_optional_defaults():
+    normalized = normalize_tracker_data({"sleep_log": [{"id": "sleep-1", "date": "2026-08-03"}]})
+    assert normalized["sleep_log"][0]["mood"] is None
+    assert normalized["sleep_log"][0]["energy"] is None
 
 
 def test_fhir_bundle_contains_medication_and_sleep_resources():

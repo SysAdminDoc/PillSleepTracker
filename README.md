@@ -30,6 +30,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - **Sleep Factors** checkboxes: Caffeine, Alcohol, Exercise, Screen Time, Stress, Nap, Late Meal, Medication
 - Notes field for each entry
 - **Sleep Score** (0-100) calculated from duration, quality, and bedtime consistency
+- Optional Mood and Energy 1-5 sliders are stored with each manual entry and gently tune the score
 - Recent entries list with colour-coded quality and score
 - Fitbit, Garmin, and Oura CSV import with REM/deep/light stage summaries
 - Bedtime consistency coaching, distinct nap logging, and a five-question MEQ chronotype profile
@@ -153,6 +154,8 @@ The sleep score (0-100) is a composite of three factors, with the duration and q
 - **Consistency (0-20 pts)**: Calculated from the standard deviation of your bedtimes over the past 7 nights. Lower variance (more consistent bedtime) gives higher points.
 
 Without a chronotype profile, the default weights are 40/40/20. The quiz shifts those weights modestly toward a more morning- or evening-oriented pattern; it does not diagnose a sleep disorder.
+
+When Mood or Energy is recorded, the core score is scaled to 80% and the average wellbeing rating contributes the remaining 20 points. Older entries and quick logs without those signals keep the original score calculation.
 
 ## Customisation Ideas
 
