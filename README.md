@@ -49,6 +49,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - Profile switcher and optional PIN-protected household profiles
 - Five-question MEQ chronotype quiz used to personalize sleep-score weighting
 - Optional AES-GCM encrypted data file with a passphrase that is never stored
+- Configurable data-folder pointer for local OneDrive, iCloud, or Syncthing-style synchronization
 - Export data as JSON backup
 - Export pill log as CSV
 - Export/import a lossless full CSV backup
@@ -103,6 +104,8 @@ The launcher installs the optional WinRT notification components when native Win
 |------|----------|----------|
 | `tracker_data.json` | `%APPDATA%\PillSleepTracker\` | Profiles, medications, pill log, sleep log; optionally AES-GCM encrypted |
 | `settings.json` | `%APPDATA%\PillSleepTracker\` | Window state, preferences |
+
+Settings > Choose sync folder can point `tracker_data.json` at a folder managed by OneDrive, iCloud Drive, Syncthing, or another file synchronizer. The settings file stays local. The app asks before adopting an existing canonical data file; do not edit the JSON concurrently on multiple devices.
 
 Linux/macOS: `~/PillSleepTracker/`
 

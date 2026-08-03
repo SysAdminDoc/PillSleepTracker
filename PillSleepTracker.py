@@ -141,12 +141,18 @@ DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
                     "reminders_enabled":True,"reminder_grace_minutes":30,
                     "reminder_snooze_minutes":15,"low_stock_lead_days":7,
                     "native_notifications":True,"active_profile_id":"default",
-                    "data_encrypted":False}
+                    "data_encrypted":False,"sync_folder":""}
 
 class DataManager:
     def __init__(self, passphrase=None):
         self.settings = self._load(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
         for k,v in DEFAULT_SETTINGS.items(): self.settings.setdefault(k,v)
+        self.local_data_dir=DATA_DIR
+        configured_folder=str(self.settings.get("sync_folder","")).strip()
+        self.data_dir=Path(configured_folder).expanduser() if configured_folder else self.local_data_dir
+        try: self.data_dir.mkdir(parents=True,exist_ok=True)
+        except (IOError,OSError): self.data_dir=self.local_data_dir; self.settings["sync_folder"]=""
+        self.data_file=self.data_dir/"tracker_data.json"
         self._data_passphrase = str(passphrase) if passphrase is not None else os.environ.get("PST_DATA_PASSPHRASE","")
         self.data_encrypted = False
         loaded = self._load_data_file()
@@ -165,17 +171,18 @@ class DataManager:
 
     def save_settings(self): self._write(SETTINGS_FILE, self.settings)
 
-    def _load_data_file(self):
+    def _load_data_file(self, path=None):
         default={"medications":[],"med_log":[],"sleep_log":[],"profiles":[]}
-        if not DATA_FILE.exists(): return default
+        path=path or self.data_file
+        if not path.exists(): return default
         try:
-            text=DATA_FILE.read_text(encoding="utf-8")
+            text=path.read_text(encoding="utf-8")
         except (IOError, OSError): return default
         if text.lstrip().startswith(DATA_ENCRYPTION_PREFIX+"$"):
             if not self._data_passphrase: raise DataPassphraseRequired("A passphrase is required to open tracker_data.json.")
-            self.data_encrypted=True
-            return decrypt_json_payload(text,self._data_passphrase)
-        try: return json.loads(text)
+            loaded=decrypt_json_payload(text,self._data_passphrase); self.data_encrypted=True; return loaded
+        try:
+            loaded=json.loads(text); self.data_encrypted=False; return loaded
         except (json.JSONDecodeError,IOError): return default
 
     @staticmethod
@@ -195,8 +202,8 @@ class DataManager:
     def save_data(self):
         if self.data_encrypted:
             if not self._data_passphrase: raise DataPassphraseRequired("A passphrase is required to save encrypted tracker data.")
-            self._write_text(DATA_FILE,encrypt_json_payload(self.data,self._data_passphrase))
-        else: self._write(DATA_FILE,self.data)
+            self._write_text(self.data_file,encrypt_json_payload(self.data,self._data_passphrase))
+        else: self._write(self.data_file,self.data)
 
     def enable_encryption(self, passphrase):
         passphrase=str(passphrase)
@@ -207,6 +214,15 @@ class DataManager:
     def disable_encryption(self):
         self.data_encrypted=False; self._data_passphrase=""; self.settings["data_encrypted"]=False
         self.save_data(); self.save_settings()
+
+    def configure_sync_folder(self, folder):
+        target=Path(folder).expanduser(); target.mkdir(parents=True,exist_ok=True); target_file=target/"tracker_data.json"
+        if target_file.exists(): incoming=self._load_data_file(target_file)
+        else: incoming=self.data
+        self.data_dir=target; self.data_file=target_file; self.data=normalize_tracker_data(incoming)
+        self.settings["sync_folder"]="" if target.resolve()==self.local_data_dir.resolve() else str(target)
+        self.settings["data_encrypted"]=self.data_encrypted
+        self.save_data(); self.save_settings(); return self.data_dir
 
     def export_json(self, path): self._write(Path(path),self.data); return Path(path)
     def import_json(self, path):
@@ -1197,6 +1213,16 @@ class SettingsPage(ctk.CTkScrollableFrame):
                                               anchor="w",command=self._toggle_encryption)
         self._encryption_button.pack(fill="x",padx=T.PAD_LG,pady=2)
         self._refresh_encryption_controls()
+        self._sect("Sync folder",T.TEAL)
+        self._sync_label=ctk.CTkLabel(self,text="",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,wraplength=460,justify="left")
+        self._sync_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
+        ctk.CTkButton(self,text="Choose sync folder",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+                      hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
+                      anchor="w",command=self._choose_sync_folder).pack(fill="x",padx=T.PAD_LG,pady=2)
+        ctk.CTkButton(self,text="Use local APPDATA storage",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+                      hover_color=T.HOVER,text_color=T.TEXT_SEC,border_width=1,border_color=T.BORDER,
+                      anchor="w",command=self._use_local_storage).pack(fill="x",padx=T.PAD_LG,pady=2)
+        self._refresh_sync_controls()
         self._sect("Data Management")
         for txt,cmd,clr in [("Export Data (JSON)",self._exp,T.BLUE),("Export Pill Log (CSV)",self._csv,T.BLUE),
                              ("Export Full Backup (CSV)",self._csv_full,T.TEAL),
@@ -1211,7 +1237,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
                        hover_color="#2a0d0d",text_color=T.RED,border_width=1,border_color=T.BTN_DNG,
                        command=self._reset).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("About")
-        ctk.CTkLabel(self,text=f"PillSleepTracker Pro v2.0\nData: {DATA_DIR}\n\nBuilt with Python + CustomTkinter + Matplotlib",
+        ctk.CTkLabel(self,text=f"PillSleepTracker Pro v2.0\nData: {self.dm.data_dir}\n\nBuilt with Python + CustomTkinter + Matplotlib",
                       font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(4,T.PAD_LG))
     def _so(self,v): self.dm.settings["opacity"]=round(v,2); self.app.attributes("-alpha",v); self._ol.configure(text=f"{int(v*100)}%")
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
@@ -1224,6 +1250,22 @@ class SettingsPage(ctk.CTkScrollableFrame):
         else:
             self._encryption_label.configure(text="Status: plain JSON. Encryption is optional and passphrase-protected.",text_color=T.TEXT_SEC)
             self._encryption_button.configure(text="Enable AES-GCM storage")
+    def _refresh_sync_controls(self):
+        configured=self.dm.settings.get("sync_folder","")
+        label=str(self.dm.data_dir) if configured else f"Local storage: {self.dm.data_dir}"
+        self._sync_label.configure(text=f"Current data folder:\n{label}")
+    def _set_sync_folder(self, folder):
+        target=Path(folder).expanduser()
+        if target.resolve()!=self.dm.data_dir.resolve() and (target/"tracker_data.json").exists():
+            if not messagebox.askyesno("Use existing sync data","This folder already contains tracker_data.json. Use it as the canonical data file? The current local view will be replaced.",parent=self.winfo_toplevel()): return
+        try:
+            self.dm.configure_sync_folder(target); self._refresh_sync_controls(); self._refresh_encryption_controls()
+            messagebox.showinfo("Sync folder updated",f"Tracker data now uses:\n{self.dm.data_dir}",parent=self.winfo_toplevel())
+        except Exception as exc: messagebox.showerror("Sync folder failed",str(exc),parent=self.winfo_toplevel())
+    def _choose_sync_folder(self):
+        folder=filedialog.askdirectory(parent=self.winfo_toplevel(),title="Choose a local sync folder")
+        if folder: self._set_sync_folder(folder)
+    def _use_local_storage(self): self._set_sync_folder(self.dm.local_data_dir)
     def _toggle_encryption(self):
         if self.dm.data_encrypted:
             if messagebox.askyesno("Disable encryption","Write tracker_data.json as plain JSON? Anyone who can read the file will be able to see it.",parent=self.winfo_toplevel()):
@@ -1324,14 +1366,14 @@ class SettingsPage(ctk.CTkScrollableFrame):
             except Exception as e: messagebox.showerror("Error",str(e),parent=self.winfo_toplevel())
     def _folder(self):
         try:
-            if sys.platform=="win32": os.startfile(DATA_DIR)
-            elif sys.platform=="darwin": subprocess.Popen(["open",str(DATA_DIR)])
-            else: subprocess.Popen(["xdg-open",str(DATA_DIR)])
-        except: messagebox.showinfo("Path",str(DATA_DIR),parent=self.winfo_toplevel())
+            if sys.platform=="win32": os.startfile(self.dm.data_dir)
+            elif sys.platform=="darwin": subprocess.Popen(["open",str(self.dm.data_dir)])
+            else: subprocess.Popen(["xdg-open",str(self.dm.data_dir)])
+        except: messagebox.showinfo("Path",str(self.dm.data_dir),parent=self.winfo_toplevel())
     def _reset(self):
         if messagebox.askyesno("Reset","DELETE all data?\nCannot be undone!",parent=self.winfo_toplevel()):
             self.dm.data={"medications":[],"med_log":[],"sleep_log":[]}; self.dm.save_data()
-    def refresh(self): self._refresh_profile_controls(); self._refresh_encryption_controls()
+    def refresh(self): self._refresh_profile_controls(); self._refresh_encryption_controls(); self._refresh_sync_controls()
 
 # ==============================================================================
 #  SECTION 8 : MAIN APPLICATION

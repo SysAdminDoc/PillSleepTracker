@@ -9,6 +9,7 @@ All notable changes to PillSleepTracker will be documented in this file.
 - Added offline interaction screening, prescribing clinician and reference-photo fields, refill and dose-change history, and optional PIN-protected household profiles.
 - Added optional passphrase-protected AES-GCM storage and lossless full JSON/CSV backup restore.
 - Added active-profile FHIR R4 JSON export with MedicationStatement and sleep Observation resources.
+- Added a configurable sync-folder pointer for file synchronizers while keeping local UI settings separate.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
 
