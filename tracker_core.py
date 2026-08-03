@@ -535,6 +535,63 @@ def adherence_for_day(
     return taken, len(doses), sum(1 for dose in doses if dose_status(dose, logs, datetime.max, 0) == "skipped")
 
 
+def _condition_streak(qualifying_days: set[date], today: date) -> int:
+    if not qualifying_days:
+        return 0
+    cursor = today
+    if cursor not in qualifying_days and cursor - timedelta(days=1) in qualifying_days:
+        cursor -= timedelta(days=1)
+    streak = 0
+    while cursor in qualifying_days:
+        streak += 1
+        cursor -= timedelta(days=1)
+    return streak
+
+
+def goal_progress(
+    goal: Mapping[str, Any],
+    sleep_entries: Sequence[Mapping[str, Any]] = (),
+    medications: Sequence[Mapping[str, Any]] = (),
+    logs: Sequence[Mapping[str, Any]] = (),
+    today: date | datetime | str | None = None,
+) -> dict[str, Any]:
+    """Calculate consecutive-day progress for the dashboard's built-in goals."""
+
+    target = max(1, int(goal.get("target_days", goal.get("target", 1))))
+    day = _as_date(today)
+    qualifying_days: set[date] = set()
+    goal_type = str(goal.get("type", ""))
+    if goal_type == "sleep_duration_streak":
+        minimum = max(1, int(goal.get("min_duration_min", 420)))
+        for entry in sleep_entries:
+            if entry.get("is_nap"):
+                continue
+            entry_day = _as_date(entry.get("date"), None)
+            if entry_day is None:
+                continue
+            try:
+                duration = int(entry.get("duration_min", 0))
+            except (TypeError, ValueError):
+                duration = 0
+            if duration >= minimum:
+                qualifying_days.add(entry_day)
+    elif goal_type == "med_adherence_streak":
+        for offset in range(max(target, 365)):
+            entry_day = day - timedelta(days=offset)
+            taken, scheduled, _ = adherence_for_day(medications, logs, entry_day)
+            if scheduled and taken == scheduled:
+                qualifying_days.add(entry_day)
+    current = _condition_streak(qualifying_days, day)
+    return {
+        "id": str(goal.get("id", goal_type or "goal")),
+        "label": str(goal.get("label", "Goal")),
+        "current": current,
+        "target": target,
+        "percent": min(100, round(current / target * 100)),
+        "complete": current >= target,
+    }
+
+
 def adherence_rows(
     medications: Sequence[Mapping[str, Any]],
     logs: Sequence[Mapping[str, Any]],

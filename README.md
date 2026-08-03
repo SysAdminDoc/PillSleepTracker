@@ -7,6 +7,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 ### Dashboard (Home)
 - Time-of-day greeting with today's date
 - At-a-glance stat cards: Today's Meds, Last Sleep, Pill Streak
+- **Goal Cards**: consecutive 7+ hour sleep nights and on-track medication days, with completion toasts
 - **Quick Take** grid: one-click pill logging with undo, colour-coded by medication
 - Sleep summary card with score badge and streak counter
 - Low stock alerts for medications running low

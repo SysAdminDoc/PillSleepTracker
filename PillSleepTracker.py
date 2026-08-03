@@ -81,6 +81,7 @@ from tracker_core import (
     latest_dose_action,
     import_wearable_csv,
     import_tracker_csv,
+    goal_progress,
     hash_pin,
     MEQ_QUESTIONS,
     normalize_schedule_times,
@@ -714,6 +715,11 @@ class DashboardPage(ctk.CTkScrollableFrame):
         self.c_slp=StatCard(sr,"Last Sleep","--","",T.PURPLE); self.c_slp.grid(row=0,column=1,padx=3,pady=3,sticky="nsew")
         self.c_str=StatCard(sr,"Pill Streak","--","",T.AMBER); self.c_str.grid(row=0,column=2,padx=3,pady=3,sticky="nsew")
 
+        gh=ctk.CTkFrame(self,fg_color="transparent"); gh.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_SM,4))
+        ctk.CTkLabel(gh,text="Goal Cards",font=ctk.CTkFont(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
+        self._goals=ctk.CTkFrame(self,fg_color="transparent"); self._goals.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
+        self._celebrated_goals=set()
+
         # Quick Take header
         qh=ctk.CTkFrame(self,fg_color="transparent"); qh.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_SM,4))
         ctk.CTkLabel(qh,text="Quick Take",font=ctk.CTkFont(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
@@ -731,6 +737,29 @@ class DashboardPage(ctk.CTkScrollableFrame):
         self._sc.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
 
         self._alerts=ctk.CTkFrame(self,fg_color="transparent"); self._alerts.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_MD))
+
+    def _refresh_goals(self):
+        for widget in self._goals.winfo_children(): widget.destroy()
+        specs=[
+            ("sleep-7-hours","7 nights of 7+ hours",{"type":"sleep_duration_streak","target_days":7,"min_duration_min":420},T.PURPLE),
+            ("meds-7-days","7 days on track",{"type":"med_adherence_streak","target_days":7},T.GREEN),
+        ]
+        grid=ctk.CTkFrame(self._goals,fg_color="transparent"); grid.pack(fill="x",padx=T.PAD_SM,pady=(0,T.PAD_SM))
+        grid.columnconfigure((0,1),weight=1,uniform="goals")
+        for index,(goal_id,label,spec,accent) in enumerate(specs):
+            progress=goal_progress({"id":goal_id,"label":label,**spec},self.dm.sleep_entries,self.dm.meds,self.dm._med_logs())
+            card=ctk.CTkFrame(grid,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,
+                              border_color=accent if progress["complete"] else T.BORDER)
+            card.grid(row=0,column=index,padx=3,pady=3,sticky="nsew")
+            ctk.CTkLabel(card,text=label,font=ctk.CTkFont(size=11,weight="bold"),text_color=T.TEXT,
+                         anchor="w",wraplength=150,justify="left").pack(anchor="w",padx=T.PAD_SM,pady=(T.PAD_SM,2))
+            bar=ctk.CTkProgressBar(card,height=8,fg_color=T.BORDER,progress_color=accent)
+            bar.set(progress["percent"] / 100); bar.pack(fill="x",padx=T.PAD_SM,pady=(2,2))
+            status="Complete!  🎉" if progress["complete"] else f"{progress['current']}/{progress['target']} days"
+            ctk.CTkLabel(card,text=status,font=ctk.CTkFont(size=10,weight="bold" if progress["complete"] else "normal"),
+                         text_color=accent if progress["complete"] else T.TEXT_MUTED).pack(anchor="w",padx=T.PAD_SM,pady=(0,T.PAD_SM))
+            if progress["complete"] and goal_id not in self._celebrated_goals:
+                self._celebrated_goals.add(goal_id); self.toast.show(f"Goal complete: {label}! 🎉","success")
 
     def refresh(self):
         meds=self.dm.meds; taken=sum(1 for m in meds if self.dm.taken_today(m["id"])); total=len(meds)
@@ -750,6 +779,7 @@ class DashboardPage(ctk.CTkScrollableFrame):
 
         streak=self.dm.pill_streak()
         self.c_str.update_values(str(streak),f"consecutive day{'s' if streak!=1 else ''}",T.AMBER)
+        self._refresh_goals()
 
         # Quick Take grid
         for w in self._qt.winfo_children(): w.destroy()

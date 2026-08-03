@@ -14,6 +14,7 @@ from tracker_core import (
     encrypt_json_payload,
     export_monthly_adherence_pdf,
     export_tracker_csv,
+    goal_progress,
     hash_pin,
     import_tracker_csv,
     import_wearable_csv,
@@ -83,6 +84,31 @@ def test_adherence_and_reorder_forecast():
     alerts = reorder_alerts([med], logs, datetime(2026, 8, 3, 12), lead_days=7)
     assert alerts[0]["name"] == "Vitamin D"
     assert alerts[0]["days_left"] == 3.0
+
+
+def test_goal_progress_counts_sleep_and_adherence_streaks():
+    sleep_entries = [
+        {"date": "2026-08-03", "duration_min": 480, "is_nap": False},
+        {"date": "2026-08-02", "duration_min": 430, "is_nap": False},
+        {"date": "2026-08-01", "duration_min": 420, "is_nap": False},
+        {"date": "2026-08-03", "duration_min": 60, "is_nap": True},
+    ]
+    sleep_goal = goal_progress(
+        {"id": "sleep", "type": "sleep_duration_streak", "target_days": 3, "min_duration_min": 420},
+        sleep_entries,
+        today=date(2026, 8, 3),
+    )
+    assert sleep_goal["current"] == 3
+    assert sleep_goal["complete"]
+
+    med = medication(frequency="Daily", schedule_times=["08:00"])
+    med_logs = []
+    for offset in range(3):
+        day = date(2026, 8, 3) - timedelta(days=offset)
+        dose = scheduled_doses_for_date(med, day)[0]
+        med_logs.append({"med_id": "med-1", "dose_id": dose.dose_id, "date": dose.date, "action": "taken"})
+    med_goal = goal_progress({"type": "med_adherence_streak", "target_days": 3}, [ ], [med], med_logs, date(2026, 8, 3))
+    assert med_goal["current"] == 3
 
 
 def test_monthly_pdf_export(tmp_path):
