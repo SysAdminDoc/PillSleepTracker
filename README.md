@@ -50,6 +50,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - Five-question MEQ chronotype quiz used to personalize sleep-score weighting
 - Optional AES-GCM encrypted data file with a passphrase that is never stored
 - Configurable data-folder pointer for local OneDrive, iCloud, or Syncthing-style synchronization
+- Timestamped audit log of edits, imports, profile changes, and security settings, viewable per active profile in Settings
 - Export data as JSON backup
 - Export pill log as CSV
 - Export/import a lossless full CSV backup

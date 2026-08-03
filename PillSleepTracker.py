@@ -172,7 +172,7 @@ class DataManager:
     def save_settings(self): self._write(SETTINGS_FILE, self.settings)
 
     def _load_data_file(self, path=None):
-        default={"medications":[],"med_log":[],"sleep_log":[],"profiles":[]}
+        default={"medications":[],"med_log":[],"sleep_log":[],"profiles":[],"audit_log":[]}
         path=path or self.data_file
         if not path.exists(): return default
         try:
@@ -209,10 +209,11 @@ class DataManager:
         passphrase=str(passphrase)
         if len(passphrase)<8: raise ValueError("Use an encryption passphrase with at least 8 characters.")
         self._data_passphrase=passphrase; self.data_encrypted=True; self.settings["data_encrypted"]=True
+        self._audit("enabled","encryption","",{"algorithm":"AES-GCM"},profile_id="")
         self.save_data(); self.save_settings()
 
     def disable_encryption(self):
-        self.data_encrypted=False; self._data_passphrase=""; self.settings["data_encrypted"]=False
+        self.data_encrypted=False; self.settings["data_encrypted"]=False; self._audit("disabled","encryption","",{},profile_id=""); self._data_passphrase=""
         self.save_data(); self.save_settings()
 
     def configure_sync_folder(self, folder):
@@ -222,6 +223,7 @@ class DataManager:
         self.data_dir=target; self.data_file=target_file; self.data=normalize_tracker_data(incoming)
         self.settings["sync_folder"]="" if target.resolve()==self.local_data_dir.resolve() else str(target)
         self.settings["data_encrypted"]=self.data_encrypted
+        self._audit("configured","sync_folder","",{"path":str(target)},profile_id="")
         self.save_data(); self.save_settings(); return self.data_dir
 
     def export_json(self, path): self._write(Path(path),self.data); return Path(path)
@@ -229,12 +231,14 @@ class DataManager:
         with open(path,"r",encoding="utf-8-sig") as handle: imported=json.load(handle)
         self.data=normalize_tracker_data(imported)
         if not any(p.get("id")==self.profile_id for p in self.data["profiles"]): self.settings["active_profile_id"]="default"
+        self._audit("imported","tracker_data",Path(path).name,{"format":"json"},profile_id="")
         self.save_data(); self.save_settings(); return self.data
     def export_csv(self, path): return export_tracker_csv(path,self.data)
     def export_fhir(self, path): return export_fhir_bundle(path,self.meds,self.sleep_entries,self.profile)
     def import_csv(self, path):
         self.data=import_tracker_csv(path)
         if not any(p.get("id")==self.profile_id for p in self.data["profiles"]): self.settings["active_profile_id"]="default"
+        self._audit("imported","tracker_data",Path(path).name,{"format":"csv"},profile_id="")
         self.save_data(); self.save_settings(); return self.data
 
     @property
@@ -249,40 +253,57 @@ class DataManager:
     def all_meds(self): return [m for m in self.data["medications"] if m.get("profile_id","default")==self.profile_id]
     @property
     def sleep_entries(self): return [s for s in self.data["sleep_log"] if s.get("profile_id","default")==self.profile_id]
+    @property
+    def audit_entries(self): return [e for e in self.data.get("audit_log",[]) if e.get("profile_id","") in ("",self.profile_id)]
     def _med_logs(self): return [l for l in self.data["med_log"] if l.get("profile_id","default")==self.profile_id]
+
+    def _audit(self, action, entity, entity_id="", details=None, profile_id=None):
+        event={"id":str(uuid.uuid4()),"timestamp":datetime.now().isoformat(timespec="seconds"),"action":str(action),
+               "entity":str(entity),"entity_id":str(entity_id or ""),"profile_id":self.profile_id if profile_id is None else str(profile_id),
+               "details":dict(details or {})}
+        self.data.setdefault("audit_log",[]).append(event)
+        self.data["audit_log"]=self.data["audit_log"][-2000:]
 
     def create_profile(self, name, pin=""):
         name=str(name).strip()
         if not name or any(p.get("name","").casefold()==name.casefold() for p in self.profiles): return None
         profile={"id":f"profile-{uuid.uuid4().hex[:12]}","name":name,"pin_hash":hash_pin(str(pin))}
-        self.profiles.append(profile); self.save_data(); return profile
+        self.profiles.append(profile); self._audit("created","profile",profile["id"],{"name":name},profile_id=""); self.save_data(); return profile
     def switch_profile(self, profile_id, pin=""):
         profile=next((p for p in self.profiles if p.get("id")==profile_id),None)
         if not profile or not verify_pin(str(pin),profile.get("pin_hash","")): return False
-        self.settings["active_profile_id"]=profile_id; self.save_settings(); return True
+        previous=self.profile_id; self.settings["active_profile_id"]=profile_id; self._audit("switched","profile",profile_id,{"from":previous},profile_id=""); self.save_data(); self.save_settings(); return True
     def delete_profile(self, profile_id):
         if profile_id=="default" or profile_id==self.profile_id: return False
-        if not any(p.get("id")==profile_id for p in self.profiles): return False
+        profile=next((p for p in self.profiles if p.get("id")==profile_id),None)
+        if not profile: return False
         self.data["profiles"]=[p for p in self.profiles if p.get("id")!=profile_id]
         for key in ("medications","med_log","sleep_log"): self.data[key]=[item for item in self.data[key] if item.get("profile_id","default")!=profile_id]
+        self._audit("deleted","profile",profile_id,{"name":profile.get("name","")},profile_id="")
         self.save_data(); return True
 
     def add_med(self, d):
         d.setdefault("id",str(uuid.uuid4())); d.setdefault("created",datetime.now().isoformat())
         d.setdefault("active",True); d.setdefault("profile_id",self.profile_id); d.setdefault("clinician","")
         d.setdefault("refill_history",[]); d.setdefault("dose_changes",[]); d.setdefault("photo_path","")
-        self.data["medications"].append(d); self.save_data()
+        self.data["medications"].append(d); self._audit("created","medication",d["id"],{"name":d.get("name","")}); self.save_data()
     def update_med(self, mid, upd):
         upd=dict(upd)
         for m in self.data["medications"]:
             if m["id"]==mid and m.get("profile_id","default")==self.profile_id:
                 note=upd.pop("dose_change_note","") if isinstance(upd,dict) else ""
+                changed=[key for key,value in upd.items() if m.get(key)!=value]
                 if "dosage" in upd and upd.get("dosage")!=m.get("dosage"):
                     m.setdefault("dose_changes",[]).append({"date":datetime.now().strftime("%Y-%m-%d"),"from":m.get("dosage",""),"to":upd.get("dosage",""),"notes":note})
-                m.update(upd); break
+                m.update(upd)
+                if changed: self._audit("updated","medication",mid,{"name":m.get("name",""),"fields":changed})
+                break
         self.save_data()
     def delete_med(self, mid):
-        self.data["medications"]=[m for m in self.data["medications"] if m["id"]!=mid or m.get("profile_id","default")!=self.profile_id]; self.save_data()
+        med=self.get_med(mid)
+        self.data["medications"]=[m for m in self.data["medications"] if m["id"]!=mid or m.get("profile_id","default")!=self.profile_id]
+        if med: self._audit("deleted","medication",mid,{"name":med.get("name","")})
+        self.save_data()
     def get_med(self, mid):
         for m in self.data["medications"]:
             if m["id"]==mid and m.get("profile_id","default")==self.profile_id: return m
@@ -295,6 +316,7 @@ class DataManager:
         if med.get("supply") is None: med["supply"]=quantity
         else: med["supply"]+=quantity
         med.setdefault("refill_history",[]).append({"date":datetime.now().strftime("%Y-%m-%d"),"quantity":quantity,"note":str(note).strip()})
+        self._audit("refilled","medication",mid,{"name":med.get("name",""),"quantity":quantity})
         self.save_data(); return True
     def interaction_findings(self): return check_interactions(self.meds)
 
@@ -332,6 +354,7 @@ class DataManager:
             entry["snooze_until"]=(now+timedelta(minutes=minutes)).isoformat(timespec="seconds")
         self.data["med_log"].append(entry)
         if action=="taken" and med.get("supply") is not None and med["supply"]>0: med["supply"]-=1
+        self._audit(action,"med_log",dose_id or mid,{"medication":med.get("name","")})
         self.save_data()
         return True
 
@@ -353,6 +376,7 @@ class DataManager:
                 self.data["med_log"].pop(i)
                 med=self.get_med(mid)
                 if med and med.get("supply") is not None: med["supply"]+=1
+                self._audit("undone","med_log",l.get("dose_id") or mid,{"medication":l.get("med_name","")})
                 removed=True
                 break
         self.save_data()
@@ -395,7 +419,7 @@ class DataManager:
             self.data["sleep_log"]=[s for s in self.data["sleep_log"] if not (s.get("profile_id","default")==self.profile_id and s.get("id")==entry.get("id"))]
         else:
             self.data["sleep_log"]=[s for s in self.data["sleep_log"] if s.get("profile_id","default")!=self.profile_id or s.get("date")!=entry["date"] or s.get("is_nap",False)]
-        self.data["sleep_log"].append(entry); self.save_data()
+        self.data["sleep_log"].append(entry); self._audit("created","sleep_log",entry["id"],{"date":entry.get("date",""),"is_nap":bool(entry.get("is_nap"))}); self.save_data()
     def get_sleep(self, d):
         for s in self.data["sleep_log"]:
             if s.get("profile_id","default")==self.profile_id and s.get("date")==d and not s.get("is_nap",False): return s
@@ -1236,6 +1260,10 @@ class SettingsPage(ctk.CTkScrollableFrame):
         ctk.CTkButton(self,text="Reset All Data",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
                        hover_color="#2a0d0d",text_color=T.RED,border_width=1,border_color=T.BTN_DNG,
                        command=self._reset).pack(fill="x",padx=T.PAD_LG,pady=2)
+        self._sect("Audit log",T.TEXT_SEC)
+        ctk.CTkButton(self,text="View recent edits",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+                      hover_color=T.HOVER,text_color=T.TEXT_SEC,border_width=1,border_color=T.BORDER,
+                      anchor="w",command=self._audit_log).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("About")
         ctk.CTkLabel(self,text=f"PillSleepTracker Pro v2.0\nData: {self.dm.data_dir}\n\nBuilt with Python + CustomTkinter + Matplotlib",
                       font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(4,T.PAD_LG))
@@ -1370,9 +1398,23 @@ class SettingsPage(ctk.CTkScrollableFrame):
             elif sys.platform=="darwin": subprocess.Popen(["open",str(self.dm.data_dir)])
             else: subprocess.Popen(["xdg-open",str(self.dm.data_dir)])
         except: messagebox.showinfo("Path",str(self.dm.data_dir),parent=self.winfo_toplevel())
+    def _audit_log(self):
+        dlg=ctk.CTkToplevel(self.winfo_toplevel()); dlg.title("Audit log"); dlg.geometry("720x520"); dlg.configure(fg_color=T.BG); dlg.attributes("-topmost",True)
+        box=ctk.CTkTextbox(dlg,fg_color=T.INPUT_BG,text_color=T.TEXT,font=ctk.CTkFont(size=11)); box.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
+        entries=sorted(self.dm.audit_entries,key=lambda event:event.get("timestamp",""),reverse=True)[:200]
+        if not entries: box.insert("1.0","No edits recorded yet.")
+        else:
+            lines=[]
+            for event in entries:
+                details=json.dumps(event.get("details",{}),ensure_ascii=False,sort_keys=True)
+                scope="system" if not event.get("profile_id") else event["profile_id"]
+                lines.append(f"{event.get('timestamp','')}  {event.get('action','')}  {event.get('entity','')}  [{scope}]  {details}")
+            box.insert("1.0","\n".join(lines))
+        box.configure(state="disabled")
     def _reset(self):
         if messagebox.askyesno("Reset","DELETE all data?\nCannot be undone!",parent=self.winfo_toplevel()):
-            self.dm.data={"medications":[],"med_log":[],"sleep_log":[]}; self.dm.save_data()
+            self.dm.data=normalize_tracker_data({"medications":[],"med_log":[],"sleep_log":[],"profiles":[],"audit_log":[]})
+            self.dm.settings["active_profile_id"]="default"; self.dm._audit("reset","tracker_data","",{},profile_id=""); self.dm.save_data(); self.dm.save_settings(); self.refresh()
     def refresh(self): self._refresh_profile_controls(); self._refresh_encryption_controls(); self._refresh_sync_controls()
 
 # ==============================================================================

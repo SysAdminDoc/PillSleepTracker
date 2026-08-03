@@ -138,7 +138,7 @@ def normalize_tracker_data(payload: Mapping[str, Any]) -> dict[str, Any]:
         data["medications"] = data.pop("pills")
     if "pill_log" in data and "med_log" not in data:
         data["med_log"] = data.pop("pill_log")
-    for key in ("medications", "med_log", "sleep_log"):
+    for key in ("medications", "med_log", "sleep_log", "audit_log"):
         if not isinstance(data.get(key), list):
             data[key] = []
     profiles = data.get("profiles")
@@ -170,6 +170,15 @@ def normalize_tracker_data(payload: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(entry, dict):
             entry.setdefault("profile_id", "default")
             entry.setdefault("is_nap", False)
+    for entry in data["audit_log"]:
+        if isinstance(entry, dict):
+            entry.setdefault("id", str(uuid.uuid4()))
+            entry.setdefault("timestamp", datetime.now().isoformat(timespec="seconds"))
+            entry.setdefault("action", "unknown")
+            entry.setdefault("entity", "tracker_data")
+            entry.setdefault("entity_id", "")
+            entry.setdefault("profile_id", "")
+            entry.setdefault("details", {})
     return data
 
 
@@ -178,7 +187,7 @@ def export_tracker_csv(path: str | Path, data: Mapping[str, Any]) -> Path:
 
     normalized = normalize_tracker_data(data)
     rows = []
-    for record_type in ("profiles", "medications", "med_log", "sleep_log"):
+    for record_type in ("profiles", "medications", "med_log", "sleep_log", "audit_log"):
         rows.extend((record_type, json.dumps(item, ensure_ascii=False, separators=(",", ":"))) for item in normalized[record_type])
     destination = Path(path)
     with destination.open("w", newline="", encoding="utf-8") as handle:
@@ -191,7 +200,7 @@ def export_tracker_csv(path: str | Path, data: Mapping[str, Any]) -> Path:
 def import_tracker_csv(path: str | Path) -> dict[str, Any]:
     """Read a CSV backup created by :func:`export_tracker_csv`."""
 
-    imported: dict[str, Any] = {"profiles": [], "medications": [], "med_log": [], "sleep_log": []}
+    imported: dict[str, Any] = {"profiles": [], "medications": [], "med_log": [], "sleep_log": [], "audit_log": []}
     with Path(path).open("r", newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames or any(field not in reader.fieldnames for field in ROUNDTRIP_CSV_FIELDS):
