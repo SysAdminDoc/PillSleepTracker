@@ -48,8 +48,10 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - Always-on-top toggle
 - Profile switcher and optional PIN-protected household profiles
 - Five-question MEQ chronotype quiz used to personalize sleep-score weighting
+- Optional AES-GCM encrypted data file with a passphrase that is never stored
 - Export data as JSON backup
 - Export pill log as CSV
+- Export/import a lossless full CSV backup
 - Import data from JSON (supports v1 format migration)
 - Open data folder shortcut
 - Reset all data (danger zone)
@@ -84,13 +86,13 @@ Double-click:  Launch-PillSleepTracker.bat
 
 ### Option C: Direct
 ```bash
-pip install customtkinter matplotlib Pillow pystray
+pip install customtkinter matplotlib Pillow pystray cryptography
 python PillSleepTracker.py
 ```
 
 For a Windows distributable, build the onedir artifact with PyInstaller:
 ```powershell
-python -m PyInstaller --noconfirm --clean --windowed --name PillSleepTracker --icon icon.ico --hidden-import numpy._core._exceptions PillSleepTracker.py
+python -m PyInstaller --noconfirm --clean --windowed --name PillSleepTracker --icon icon.ico --exclude-module setuptools_scm --hidden-import numpy._core._exceptions PillSleepTracker.py
 ```
 The launcher installs the optional WinRT notification components when native Windows toast actions are available.
 
@@ -98,7 +100,7 @@ The launcher installs the optional WinRT notification components when native Win
 
 | File | Location | Contents |
 |------|----------|----------|
-| `tracker_data.json` | `%APPDATA%\PillSleepTracker\` | Profiles, medications, pill log, sleep log |
+| `tracker_data.json` | `%APPDATA%\PillSleepTracker\` | Profiles, medications, pill log, sleep log; optionally AES-GCM encrypted |
 | `settings.json` | `%APPDATA%\PillSleepTracker\` | Window state, preferences |
 
 Linux/macOS: `~/PillSleepTracker/`
@@ -157,6 +159,8 @@ If you have data from the original PillSleepTracker (v1), use Settings > Import 
 - Renaming `pills` to `medications` and adding UUIDs
 - Renaming `pill_log` to `med_log` with proper field mapping
 - Preserving all `sleep_log` entries
+
+The full CSV backup uses typed JSON records inside CSV rows so profiles, medication metadata, dose actions, and sleep-stage fields survive a CSV round trip. It is intended for backup/restore, while the shorter Pill Log CSV remains human-readable.
 
 ## License
 

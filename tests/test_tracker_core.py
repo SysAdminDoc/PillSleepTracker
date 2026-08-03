@@ -1,15 +1,22 @@
 from datetime import date, datetime, timedelta
 
+import pytest
+
 from tracker_core import (
     adherence_for_day,
     bedtime_consistency_coach,
     calculate_sleep_score,
     check_interactions,
+    decrypt_json_payload,
     dose_status,
     due_doses,
+    encrypt_json_payload,
     export_monthly_adherence_pdf,
+    export_tracker_csv,
     hash_pin,
+    import_tracker_csv,
     import_wearable_csv,
+    normalize_tracker_data,
     reorder_alerts,
     score_chronotype,
     scheduled_doses_for_date,
@@ -144,3 +151,26 @@ def test_profile_pin_hash_is_salted_and_verifiable():
     assert verify_pin("2468", encoded)
     assert not verify_pin("0000", encoded)
     assert verify_pin("", "")
+
+
+def test_aes_gcm_payload_round_trips_and_rejects_wrong_passphrase():
+    payload = {"profiles": [{"id": "default", "name": "Default"}], "secret": "medication"}
+    encrypted = encrypt_json_payload(payload, "correct horse battery")
+    assert encrypted.startswith("PST-AESGCM-1$")
+    assert decrypt_json_payload(encrypted, "correct horse battery") == payload
+    with pytest.raises(ValueError):
+        decrypt_json_payload(encrypted, "wrong passphrase")
+
+
+def test_full_csv_backup_preserves_typed_records(tmp_path):
+    data = normalize_tracker_data({
+        "profiles": [{"id": "default", "name": "Default", "pin_hash": ""}],
+        "medications": [{"id": "med-1", "name": "Vitamin D", "profile_id": "default", "active": True}],
+        "med_log": [{"med_id": "med-1", "med_name": "Vitamin D", "profile_id": "default", "date": "2026-08-03", "action": "taken"}],
+        "sleep_log": [{"id": "sleep-1", "profile_id": "default", "date": "2026-08-03", "duration_min": 480, "is_nap": False}],
+    })
+    path = export_tracker_csv(tmp_path / "backup.csv", data)
+    restored = import_tracker_csv(path)
+    assert restored["medications"][0]["name"] == "Vitamin D"
+    assert restored["med_log"][0]["action"] == "taken"
+    assert restored["sleep_log"][0]["duration_min"] == 480

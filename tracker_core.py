@@ -11,14 +11,23 @@ import csv
 import base64
 import hashlib
 import hmac
+import json
 import math
 import os
 import re
+import uuid
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+try:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+except ImportError:  # pragma: no cover - the launcher installs this optional feature dependency.
+    hashes = AESGCM = PBKDF2HMAC = None
 
 
 TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -55,6 +64,152 @@ DEFAULT_TIMES = {
     "every other day": ("09:00",),
     "weekly": ("09:00",),
 }
+
+DATA_ENCRYPTION_PREFIX = "PST-AESGCM-1"
+DATA_KDF_ITERATIONS = 310_000
+ROUNDTRIP_CSV_FIELDS = ("record_type", "record_json")
+
+
+class DataPassphraseRequired(RuntimeError):
+    """Raised when an encrypted data file needs a passphrase to be opened."""
+
+
+def _require_encryption_support() -> None:
+    if AESGCM is None or PBKDF2HMAC is None or hashes is None:
+        raise RuntimeError("AES-GCM storage requires the cryptography package.")
+
+
+def _data_key(passphrase: str, salt: bytes) -> bytes:
+    _require_encryption_support()
+    return PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=DATA_KDF_ITERATIONS,
+    ).derive(str(passphrase).encode("utf-8"))
+
+
+def encrypt_json_payload(value: Any, passphrase: str) -> str:
+    """Encrypt a JSON-compatible value with a password-derived AES-GCM key."""
+
+    if not str(passphrase):
+        raise ValueError("An encryption passphrase is required.")
+    salt = os.urandom(16)
+    nonce = os.urandom(12)
+    key = _data_key(str(passphrase), salt)
+    plaintext = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, DATA_ENCRYPTION_PREFIX.encode("ascii"))
+    encoded = [
+        DATA_ENCRYPTION_PREFIX,
+        base64.urlsafe_b64encode(salt).decode("ascii"),
+        base64.urlsafe_b64encode(nonce).decode("ascii"),
+        base64.urlsafe_b64encode(ciphertext).decode("ascii"),
+    ]
+    return "$".join(encoded)
+
+
+def decrypt_json_payload(payload: str, passphrase: str) -> Any:
+    """Decrypt an AES-GCM payload, raising ValueError for bad credentials/data."""
+
+    if not str(passphrase):
+        raise ValueError("An encryption passphrase is required.")
+    parts = str(payload).strip().split("$", 3)
+    if len(parts) != 4 or parts[0] != DATA_ENCRYPTION_PREFIX:
+        raise ValueError("Unsupported encrypted data format.")
+    try:
+        salt = base64.urlsafe_b64decode(parts[1].encode("ascii"))
+        nonce = base64.urlsafe_b64decode(parts[2].encode("ascii"))
+        ciphertext = base64.urlsafe_b64decode(parts[3].encode("ascii"))
+        plaintext = AESGCM(_data_key(str(passphrase), salt)).decrypt(
+            nonce, ciphertext, DATA_ENCRYPTION_PREFIX.encode("ascii")
+        )
+        return json.loads(plaintext.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("The passphrase is incorrect or the encrypted data is damaged.") from exc
+
+
+def normalize_tracker_data(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Migrate legacy backups and add defaults required by the current schema."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("Tracker data must be a JSON object.")
+    data = json.loads(json.dumps(dict(payload), ensure_ascii=False))
+    if "pills" in data and "medications" not in data:
+        data["medications"] = data.pop("pills")
+    if "pill_log" in data and "med_log" not in data:
+        data["med_log"] = data.pop("pill_log")
+    for key in ("medications", "med_log", "sleep_log"):
+        if not isinstance(data.get(key), list):
+            data[key] = []
+    profiles = data.get("profiles")
+    if not isinstance(profiles, list):
+        profiles = []
+    data["profiles"] = [profile for profile in profiles if isinstance(profile, dict)]
+    if not any(profile.get("id") == "default" for profile in data["profiles"]):
+        data["profiles"].insert(0, {"id": "default", "name": "Default", "pin_hash": ""})
+    for index, profile in enumerate(data["profiles"]):
+        profile.setdefault("id", f"profile-{uuid.uuid4().hex[:12]}-{index}")
+        profile.setdefault("name", f"Profile {index + 1}")
+        profile.setdefault("pin_hash", "")
+    for medication in data["medications"]:
+        if not isinstance(medication, dict):
+            continue
+        medication.setdefault("id", str(uuid.uuid4()))
+        medication.setdefault("active", True)
+        medication.setdefault("profile_id", "default")
+        medication.setdefault("clinician", "")
+        medication.setdefault("refill_history", [])
+        medication.setdefault("dose_changes", [])
+        medication.setdefault("photo_path", "")
+    for entry in data["med_log"]:
+        if isinstance(entry, dict):
+            entry.setdefault("med_id", entry.get("pill_name", ""))
+            entry.setdefault("med_name", entry.get("pill_name", ""))
+            entry.setdefault("profile_id", "default")
+    for entry in data["sleep_log"]:
+        if isinstance(entry, dict):
+            entry.setdefault("profile_id", "default")
+            entry.setdefault("is_nap", False)
+    return data
+
+
+def export_tracker_csv(path: str | Path, data: Mapping[str, Any]) -> Path:
+    """Write a lossless, typed CSV backup of the tracker data."""
+
+    normalized = normalize_tracker_data(data)
+    rows = []
+    for record_type in ("profiles", "medications", "med_log", "sleep_log"):
+        rows.extend((record_type, json.dumps(item, ensure_ascii=False, separators=(",", ":"))) for item in normalized[record_type])
+    destination = Path(path)
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=ROUNDTRIP_CSV_FIELDS)
+        writer.writeheader()
+        writer.writerows({"record_type": record_type, "record_json": record_json} for record_type, record_json in rows)
+    return destination
+
+
+def import_tracker_csv(path: str | Path) -> dict[str, Any]:
+    """Read a CSV backup created by :func:`export_tracker_csv`."""
+
+    imported: dict[str, Any] = {"profiles": [], "medications": [], "med_log": [], "sleep_log": []}
+    with Path(path).open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or any(field not in reader.fieldnames for field in ROUNDTRIP_CSV_FIELDS):
+            raise ValueError("CSV backup must contain record_type and record_json columns.")
+        for row in reader:
+            record_type = str(row.get("record_type", "")).strip()
+            if record_type == "meta":
+                continue
+            if record_type not in imported:
+                raise ValueError(f"Unsupported CSV record type: {record_type!r}.")
+            try:
+                record = json.loads(row.get("record_json", ""))
+            except json.JSONDecodeError as exc:
+                raise ValueError("CSV backup contains invalid record JSON.") from exc
+            if not isinstance(record, dict):
+                raise ValueError("CSV backup records must be JSON objects.")
+            imported[record_type].append(record)
+    return normalize_tracker_data(imported)
 
 
 def _as_date(value: date | datetime | str | None, fallback: date | None = None) -> date:

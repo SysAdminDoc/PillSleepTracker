@@ -27,7 +27,7 @@ def _pip_install(package):
             continue
     return False
 
-_REQUIRED = {"customtkinter": "customtkinter", "matplotlib": "matplotlib", "PIL": "Pillow"}
+_REQUIRED = {"customtkinter": "customtkinter", "matplotlib": "matplotlib", "PIL": "Pillow", "cryptography": "cryptography"}
 _OPTIONAL = {"pystray": "pystray",
              "winrt.windows.data.xml.dom": "winrt-Windows.Data.Xml.Dom",
              "winrt.windows.ui.notifications": "winrt-Windows.UI.Notifications"}
@@ -69,17 +69,24 @@ from tracker_core import (
     bedtime_consistency_coach,
     calculate_sleep_score,
     check_interactions,
+    DATA_ENCRYPTION_PREFIX,
+    DataPassphraseRequired,
+    decrypt_json_payload,
     dose_status,
     due_doses as scheduled_due_doses,
+    encrypt_json_payload,
     export_monthly_adherence_pdf,
+    export_tracker_csv,
     latest_dose_action,
     import_wearable_csv,
+    import_tracker_csv,
     hash_pin,
     MEQ_QUESTIONS,
     normalize_schedule_times,
     reorder_alerts as forecast_reorder_alerts,
     scheduled_doses_for_date,
     score_chronotype,
+    normalize_tracker_data,
     verify_pin,
 )
 
@@ -132,19 +139,18 @@ DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
                     "always_on_top":True,"opacity":0.96,"active_page":"dashboard",
                     "reminders_enabled":True,"reminder_grace_minutes":30,
                     "reminder_snooze_minutes":15,"low_stock_lead_days":7,
-                    "native_notifications":True,"active_profile_id":"default"}
+                    "native_notifications":True,"active_profile_id":"default",
+                    "data_encrypted":False}
 
 class DataManager:
-    def __init__(self):
+    def __init__(self, passphrase=None):
         self.settings = self._load(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
         for k,v in DEFAULT_SETTINGS.items(): self.settings.setdefault(k,v)
-        self.data = self._load(DATA_FILE, {"medications":[],"med_log":[],"sleep_log":[],"profiles":[]})
-        for k in ("medications","med_log","sleep_log"): self.data.setdefault(k,[])
-        self.data.setdefault("profiles",[])
-        if not any(p.get("id")=="default" for p in self.data["profiles"]):
-            self.data["profiles"].append({"id":"default","name":"Default","pin_hash":""})
-        for key in ("medications","med_log","sleep_log"):
-            for item in self.data[key]: item.setdefault("profile_id","default")
+        self._data_passphrase = str(passphrase) if passphrase is not None else os.environ.get("PST_DATA_PASSPHRASE","")
+        self.data_encrypted = False
+        loaded = self._load_data_file()
+        self.data = normalize_tracker_data(loaded)
+        self.settings["data_encrypted"] = self.data_encrypted
         if not any(p.get("id")==self.settings.get("active_profile_id") for p in self.data["profiles"]):
             self.settings["active_profile_id"]="default"
 
@@ -156,8 +162,20 @@ class DataManager:
         except (json.JSONDecodeError, IOError): pass
         return default
 
-    def save_data(self): self._write(DATA_FILE, self.data)
     def save_settings(self): self._write(SETTINGS_FILE, self.settings)
+
+    def _load_data_file(self):
+        default={"medications":[],"med_log":[],"sleep_log":[],"profiles":[]}
+        if not DATA_FILE.exists(): return default
+        try:
+            text=DATA_FILE.read_text(encoding="utf-8")
+        except (IOError, OSError): return default
+        if text.lstrip().startswith(DATA_ENCRYPTION_PREFIX+"$"):
+            if not self._data_passphrase: raise DataPassphraseRequired("A passphrase is required to open tracker_data.json.")
+            self.data_encrypted=True
+            return decrypt_json_payload(text,self._data_passphrase)
+        try: return json.loads(text)
+        except (json.JSONDecodeError,IOError): return default
 
     @staticmethod
     def _write(path, obj):
@@ -166,6 +184,40 @@ class DataManager:
             with open(tmp,"w",encoding="utf-8") as f: json.dump(obj,f,indent=2,ensure_ascii=False)
             tmp.replace(path)
         except IOError: pass
+
+    @staticmethod
+    def _write_text(path, text):
+        try:
+            tmp=path.with_suffix(".tmp"); tmp.write_text(text,encoding="utf-8"); tmp.replace(path)
+        except (IOError,OSError): pass
+
+    def save_data(self):
+        if self.data_encrypted:
+            if not self._data_passphrase: raise DataPassphraseRequired("A passphrase is required to save encrypted tracker data.")
+            self._write_text(DATA_FILE,encrypt_json_payload(self.data,self._data_passphrase))
+        else: self._write(DATA_FILE,self.data)
+
+    def enable_encryption(self, passphrase):
+        passphrase=str(passphrase)
+        if len(passphrase)<8: raise ValueError("Use an encryption passphrase with at least 8 characters.")
+        self._data_passphrase=passphrase; self.data_encrypted=True; self.settings["data_encrypted"]=True
+        self.save_data(); self.save_settings()
+
+    def disable_encryption(self):
+        self.data_encrypted=False; self._data_passphrase=""; self.settings["data_encrypted"]=False
+        self.save_data(); self.save_settings()
+
+    def export_json(self, path): self._write(Path(path),self.data); return Path(path)
+    def import_json(self, path):
+        with open(path,"r",encoding="utf-8-sig") as handle: imported=json.load(handle)
+        self.data=normalize_tracker_data(imported)
+        if not any(p.get("id")==self.profile_id for p in self.data["profiles"]): self.settings["active_profile_id"]="default"
+        self.save_data(); self.save_settings(); return self.data
+    def export_csv(self, path): return export_tracker_csv(path,self.data)
+    def import_csv(self, path):
+        self.data=import_tracker_csv(path)
+        if not any(p.get("id")==self.profile_id for p in self.data["profiles"]): self.settings["active_profile_id"]="default"
+        self.save_data(); self.save_settings(); return self.data
 
     @property
     def profile_id(self): return self.settings.get("active_profile_id","default")
@@ -1135,10 +1187,20 @@ class SettingsPage(ctk.CTkScrollableFrame):
                       hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._add_profile).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._refresh_profile_controls()
+        self._sect("Data security",T.AMBER)
+        self._encryption_label=ctk.CTkLabel(self,text="",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC)
+        self._encryption_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
+        self._encryption_button=ctk.CTkButton(self,text="",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+                                              hover_color=T.HOVER,text_color=T.AMBER,border_width=1,border_color=T.BORDER,
+                                              anchor="w",command=self._toggle_encryption)
+        self._encryption_button.pack(fill="x",padx=T.PAD_LG,pady=2)
+        self._refresh_encryption_controls()
         self._sect("Data Management")
         for txt,cmd,clr in [("Export Data (JSON)",self._exp,T.BLUE),("Export Pill Log (CSV)",self._csv,T.BLUE),
+                             ("Export Full Backup (CSV)",self._csv_full,T.TEAL),
                              ("Export Monthly Adherence (PDF)",self._pdf,T.PURPLE),
-                             ("Import Data (JSON)",self._imp,T.BLUE),("Open Data Folder",self._folder,T.TEXT_SEC)]:
+                             ("Import Data (JSON)",self._imp,T.BLUE),("Import Full Backup (CSV)",self._imp_csv,T.TEAL),
+                             ("Open Data Folder",self._folder,T.TEXT_SEC)]:
             ctk.CTkButton(self,text=txt,height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,hover_color=T.HOVER,
                            text_color=clr,border_width=1,border_color=T.BORDER,anchor="w",command=cmd).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("Danger Zone",T.RED)
@@ -1152,6 +1214,26 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
     def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
     def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
+    def _refresh_encryption_controls(self):
+        if self.dm.data_encrypted:
+            self._encryption_label.configure(text="Status: encrypted with AES-GCM. The passphrase is never stored.",text_color=T.GREEN)
+            self._encryption_button.configure(text="Disable encrypted storage")
+        else:
+            self._encryption_label.configure(text="Status: plain JSON. Encryption is optional and passphrase-protected.",text_color=T.TEXT_SEC)
+            self._encryption_button.configure(text="Enable AES-GCM storage")
+    def _toggle_encryption(self):
+        if self.dm.data_encrypted:
+            if messagebox.askyesno("Disable encryption","Write tracker_data.json as plain JSON? Anyone who can read the file will be able to see it.",parent=self.winfo_toplevel()):
+                self.dm.disable_encryption(); self._refresh_encryption_controls(); messagebox.showinfo("Encryption disabled","The data file is now plain JSON.",parent=self.winfo_toplevel())
+            return
+        first=simpledialog.askstring("Encrypt tracker data","Choose a passphrase (at least 8 characters):",show="*",parent=self.winfo_toplevel())
+        if first is None: return
+        second=simpledialog.askstring("Confirm passphrase","Enter the passphrase again:",show="*",parent=self.winfo_toplevel())
+        if first!=second:
+            messagebox.showwarning("Passphrases differ","The passphrases did not match; encryption was not enabled.",parent=self.winfo_toplevel()); return
+        try:
+            self.dm.enable_encryption(first); self._refresh_encryption_controls(); messagebox.showinfo("Encryption enabled","Tracker data is now protected with AES-GCM. If you forget the passphrase, the data cannot be recovered.",parent=self.winfo_toplevel())
+        except (RuntimeError,ValueError) as exc: messagebox.showerror("Encryption failed",str(exc),parent=self.winfo_toplevel())
     def _refresh_profile_controls(self):
         names=[str(profile.get("name","Profile")) for profile in self.dm.profiles]
         current=str(self.dm.profile.get("name","Default"))
@@ -1198,14 +1280,17 @@ class SettingsPage(ctk.CTkScrollableFrame):
         ctk.CTkButton(dlg,text="Save result",height=36,fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,command=_save_quiz).pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_MD))
     def _exp(self):
         fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".json",filetypes=[("JSON","*.json")],initialfile="pillsleep_backup.json")
-        if fp: DataManager._write(Path(fp),self.dm.data); messagebox.showinfo("Done",f"Exported to:\n{fp}",parent=self.winfo_toplevel())
+        if fp: self.dm.export_json(fp); messagebox.showinfo("Done",f"Exported to:\n{fp}",parent=self.winfo_toplevel())
     def _csv(self):
         fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".csv",filetypes=[("CSV","*.csv")],initialfile="pill_log.csv")
         if fp:
             with open(fp,"w",newline="",encoding="utf-8") as f:
                 w=csv.writer(f); w.writerow(["Date","Time","Medication","Action"])
-                for l in sorted(self.dm.data["med_log"],key=lambda x:x["date"]): w.writerow([l["date"],l.get("time",""),l["med_name"],l["action"]])
+                for l in sorted(self.dm._med_logs(),key=lambda x:x["date"]): w.writerow([l["date"],l.get("time",""),l["med_name"],l["action"]])
             messagebox.showinfo("Done",f"CSV exported to:\n{fp}",parent=self.winfo_toplevel())
+    def _csv_full(self):
+        fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".csv",filetypes=[("CSV","*.csv")],initialfile="pillsleep_backup.csv")
+        if fp: export_tracker_csv(fp,self.dm.data); messagebox.showinfo("Done",f"Full backup exported to:\n{fp}",parent=self.winfo_toplevel())
     def _pdf(self):
         now=datetime.now()
         fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".pdf",
@@ -1220,18 +1305,13 @@ class SettingsPage(ctk.CTkScrollableFrame):
         fp=filedialog.askopenfilename(parent=self.winfo_toplevel(),filetypes=[("JSON","*.json")])
         if fp:
             try:
-                with open(fp,"r",encoding="utf-8") as f: imp=json.load(f)
-                if any(k in imp for k in ("medications","med_log","sleep_log","pills")):
-                    if "pills" in imp and "medications" not in imp:
-                        imp["medications"]=imp.pop("pills")
-                        for m in imp["medications"]: m.setdefault("id",str(uuid.uuid4()))
-                    if "pill_log" in imp and "med_log" not in imp:
-                        imp["med_log"]=imp.pop("pill_log")
-                        for l in imp["med_log"]: l.setdefault("med_id",l.get("pill_name","")); l.setdefault("med_name",l.get("pill_name",""))
-                    self.dm.data=imp
-                    for k in ("medications","med_log","sleep_log"): self.dm.data.setdefault(k,[])
-                    self.dm.save_data(); messagebox.showinfo("Done","Imported!",parent=self.winfo_toplevel())
-                else: messagebox.showwarning("Invalid","Not valid tracker data.",parent=self.winfo_toplevel())
+                self.dm.import_json(fp); self._refresh_profile_controls(); messagebox.showinfo("Done","Imported tracker data.",parent=self.winfo_toplevel())
+            except Exception as e: messagebox.showerror("Error",str(e),parent=self.winfo_toplevel())
+    def _imp_csv(self):
+        fp=filedialog.askopenfilename(parent=self.winfo_toplevel(),filetypes=[("CSV","*.csv")])
+        if fp:
+            try:
+                self.dm.import_csv(fp); self._refresh_profile_controls(); messagebox.showinfo("Done","Imported full CSV backup.",parent=self.winfo_toplevel())
             except Exception as e: messagebox.showerror("Error",str(e),parent=self.winfo_toplevel())
     def _folder(self):
         try:
@@ -1242,7 +1322,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _reset(self):
         if messagebox.askyesno("Reset","DELETE all data?\nCannot be undone!",parent=self.winfo_toplevel()):
             self.dm.data={"medications":[],"med_log":[],"sleep_log":[]}; self.dm.save_data()
-    def refresh(self): self._refresh_profile_controls()
+    def refresh(self): self._refresh_profile_controls(); self._refresh_encryption_controls()
 
 # ==============================================================================
 #  SECTION 8 : MAIN APPLICATION
@@ -1251,7 +1331,7 @@ class PillSleepTrackerPro(ctk.CTk):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("dark"); ctk.set_default_color_theme("dark-blue")
-        self.dm=DataManager(); s=self.dm.settings
+        self.dm=self._load_data_manager(); s=self.dm.settings
         self.title("PillSleepTracker Pro")
         self.geometry(f"{s['window_w']}x{s['window_h']}+{s['window_x']}+{s['window_y']}")
         self.minsize(420,500); self.configure(fg_color=T.BG)
@@ -1267,6 +1347,22 @@ class PillSleepTrackerPro(ctk.CTk):
         _register_toast_protocol()
         self.reminders=ReminderManager(self,self.dm,self.toast); self.reminders.start()
         if HAS_TRAY and HAS_PIL and not os.environ.get("PST_TEST_MODE"): threading.Thread(target=self._setup_tray,daemon=True).start()
+
+    def _load_data_manager(self):
+        passphrase=None
+        for attempt in range(3):
+            try:
+                return DataManager(passphrase)
+            except DataPassphraseRequired:
+                passphrase=simpledialog.askstring("Unlock tracker data","Enter the data-file passphrase:",show="*",parent=self)
+                if passphrase is None: raise SystemExit(1)
+            except ValueError:
+                if attempt>=2:
+                    messagebox.showerror("Unable to unlock data","The passphrase was incorrect or tracker_data.json is damaged.",parent=self)
+                    raise SystemExit(1)
+                messagebox.showwarning("Try again","The passphrase was not accepted.",parent=self)
+                passphrase=None
+        raise SystemExit(1)
 
     def _build_tb(self):
         tb=ctk.CTkFrame(self,height=32,fg_color=T.TITLEBAR,corner_radius=0); tb.pack(fill="x"); tb.pack_propagate(False)
