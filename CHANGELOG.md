@@ -12,6 +12,7 @@ All notable changes to PillSleepTracker will be documented in this file.
 - Added a configurable sync-folder pointer for file synchronizers while keeping local UI settings separate.
 - Added a capped, profile-aware audit log with a recent-edits viewer in Settings and lossless backup coverage.
 - Added a persisted compact today mode with a dashboard-only shell and guarded 1-5 page quick keys.
+- Added optional Windows light/dark palette and accent-color following, applied safely at startup.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
 

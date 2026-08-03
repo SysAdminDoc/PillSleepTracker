@@ -46,6 +46,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 ### Settings
 - Window opacity slider (30-100%)
 - Always-on-top toggle
+- Optional Windows theme and accent following, applied on startup
 - Profile switcher and optional PIN-protected household profiles
 - Five-question MEQ chronotype quiz used to personalize sleep-score weighting
 - Optional AES-GCM encrypted data file with a passphrase that is never stored

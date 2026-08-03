@@ -120,6 +120,46 @@ class T:
     CHART_BG="#0d1117"; CHART_GRID="#21262d"; CHART_TICK="#8b949e"
     PAD_XS=4; PAD_SM=8; PAD_MD=12; PAD_LG=16; PAD_XL=24; RAD=8
 
+_THEME_TOKEN_NAMES = ("BG","SURFACE","SURFACE_HI","CARD","SIDEBAR","SIDEBAR_ACT","TITLEBAR",
+                      "BLUE","GREEN","RED","AMBER","PURPLE","TEAL","PINK","TEXT","TEXT_SEC",
+                      "TEXT_MUTED","BORDER","DIVIDER","HOVER","ACTIVE","INPUT_BG","INPUT_BD",
+                      "BTN_PRI","BTN_PRI_H","BTN_DNG","BTN_DNG_H","CHART_BG","CHART_GRID","CHART_TICK")
+_DARK_THEME = {name:getattr(T,name) for name in _THEME_TOKEN_NAMES}
+_LIGHT_THEME = {
+    "BG":"#f6f8fa","SURFACE":"#ffffff","SURFACE_HI":"#eaeef2","CARD":"#ffffff",
+    "SIDEBAR":"#f6f8fa","SIDEBAR_ACT":"#eaeef2","TITLEBAR":"#ffffff",
+    "GREEN":"#1a7f37","RED":"#cf222e","AMBER":"#9a6700","PURPLE":"#8250df","TEAL":"#0e7490",
+    "PINK":"#bf3989","TEXT":"#1f2328","TEXT_SEC":"#656d76","TEXT_MUTED":"#8c959f",
+    "BORDER":"#d0d7de","DIVIDER":"#d8dee4","HOVER":"#eaeef2","ACTIVE":"#ddf4ff",
+    "INPUT_BG":"#ffffff","INPUT_BD":"#d0d7de","BTN_PRI":"#1f883d","BTN_PRI_H":"#1a7f37",
+    "BTN_DNG":"#cf222e","BTN_DNG_H":"#a40e26","CHART_BG":"#ffffff","CHART_GRID":"#d8dee4",
+    "CHART_TICK":"#656d76",
+}
+
+def _windows_theme_state():
+    if sys.platform != "win32": return False, None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            light=bool(winreg.QueryValueEx(key,"AppsUseLightTheme")[0])
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,r"Software\Microsoft\Windows\DWM") as key:
+            raw=int(winreg.QueryValueEx(key,"ColorizationColor")[0])
+        return light, f"#{raw & 0xFFFFFF:06x}"
+    except (OSError,TypeError,ValueError):
+        return False, None
+
+def _apply_windows_theme(follow=True):
+    light,accent=_windows_theme_state() if follow else (False,None)
+    palette=dict(_DARK_THEME)
+    if follow and light: palette.update(_LIGHT_THEME)
+    if accent: palette["BLUE"]=accent
+    for name,value in palette.items(): setattr(T,name,value)
+    ctk.set_appearance_mode("System" if follow else "dark")
+    if "PILL_COLOURS" in globals() and accent: PILL_COLOURS["Blue"]=accent
+    if "QUALITY_COLOURS" in globals():
+        QUALITY_COLOURS.update({1:T.RED,2:"#f0883e",3:T.AMBER,4:T.GREEN,5:T.BLUE})
+
 PILL_COLOURS = {
     "Blue":"#58a6ff","Green":"#3fb950","Red":"#f85149","Amber":"#d29922",
     "Purple":"#bc8cff","Teal":"#39d2c0","Pink":"#f778ba","Orange":"#f0883e",
@@ -138,7 +178,7 @@ DATA_FILE = DATA_DIR / "tracker_data.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
                     "compact_mode":False,"compact_w":360,"compact_h":430,
-                    "always_on_top":True,"opacity":0.96,"active_page":"dashboard",
+                    "always_on_top":True,"opacity":0.96,"active_page":"dashboard","follow_system_theme":True,
                     "reminders_enabled":True,"reminder_grace_minutes":30,
                     "reminder_snooze_minutes":15,"low_stock_lead_days":7,
                     "native_notifications":True,"active_profile_id":"default",
@@ -1207,6 +1247,13 @@ class SettingsPage(ctk.CTkScrollableFrame):
         ctk.CTkLabel(self,text="Shows the Dashboard only in a smaller widget. Use the title-bar button to expand.",
                      font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
                          anchor="w",padx=T.PAD_LG,pady=(0,4))
+        self._tv=ctk.BooleanVar(value=self.dm.settings.get("follow_system_theme",True))
+        ctk.CTkSwitch(self,text="Follow Windows theme and accent",variable=self._tv,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+                       fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
+                       command=self._tt).pack(anchor="w",padx=T.PAD_LG,pady=4)
+        ctk.CTkLabel(self,text="Theme preference and Windows accent are applied when PillSleepTracker starts. Restart after changing this switch.",
+                     font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
+                         anchor="w",padx=T.PAD_LG,pady=(0,4))
         self._sect("Reminders")
         self._rv=ctk.BooleanVar(value=self.dm.settings.get("reminders_enabled",True))
         ctk.CTkSwitch(self,text="Dose reminders",variable=self._rv,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
@@ -1278,6 +1325,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _so(self,v): self.dm.settings["opacity"]=round(v,2); self.app.attributes("-alpha",v); self._ol.configure(text=f"{int(v*100)}%")
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
     def _tc(self): self.app._set_compact_mode(self._cm.get())
+    def _tt(self): self.dm.settings["follow_system_theme"]=self._tv.get(); self.dm.save_settings()
     def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
     def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
     def _refresh_encryption_controls(self):
@@ -1426,6 +1474,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
             self.dm.settings["active_profile_id"]="default"; self.dm._audit("reset","tracker_data","",{},profile_id=""); self.dm.save_data(); self.dm.save_settings(); self.refresh()
     def refresh(self):
         self._cm.set(self.dm.settings.get("compact_mode",False))
+        self._tv.set(self.dm.settings.get("follow_system_theme",True))
         self._refresh_profile_controls(); self._refresh_encryption_controls(); self._refresh_sync_controls()
 
 # ==============================================================================
@@ -1436,8 +1485,8 @@ PAGE_QUICK_KEYS = {"1":"dashboard","2":"meds","3":"sleep","4":"analytics","5":"s
 class PillSleepTrackerPro(ctk.CTk):
     def __init__(self):
         super().__init__()
-        ctk.set_appearance_mode("dark"); ctk.set_default_color_theme("dark-blue")
         self.dm=self._load_data_manager(); s=self.dm.settings
+        ctk.set_default_color_theme("dark-blue"); _apply_windows_theme(s.get("follow_system_theme",True))
         self.title("PillSleepTracker Pro")
         self.geometry(f"{s['window_w']}x{s['window_h']}+{s['window_x']}+{s['window_y']}")
         self.minsize(420,500); self.configure(fg_color=T.BG)
