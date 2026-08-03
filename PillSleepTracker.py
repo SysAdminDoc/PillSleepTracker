@@ -28,26 +28,31 @@ def _pip_install(package):
     return False
 
 _REQUIRED = {"customtkinter": "customtkinter", "matplotlib": "matplotlib", "PIL": "Pillow"}
-_OPTIONAL = {"pystray": "pystray"}
+_OPTIONAL = {"pystray": "pystray",
+             "winrt.windows.data.xml.dom": "winrt-Windows.Data.Xml.Dom",
+             "winrt.windows.ui.notifications": "winrt-Windows.UI.Notifications"}
+_FROZEN = bool(getattr(sys,"frozen",False))
 
 _miss = []
-for _mod, _pkg in _REQUIRED.items():
-    try: importlib.import_module(_mod)
-    except ImportError: _miss.append(_pkg)
-if _miss:
-    print(f"[PST] Installing: {', '.join(_miss)} ...")
-    for _pkg in _miss:
-        if not _pip_install(_pkg):
-            print(f"  FAILED: {_pkg}  ->  pip install {_pkg}"); sys.exit(1)
-    print("[PST] Ready.")
-for _mod, _pkg in _OPTIONAL.items():
-    try: importlib.import_module(_mod)
-    except ImportError: _pip_install(_pkg)
+if not _FROZEN:
+    for _mod, _pkg in _REQUIRED.items():
+        try: importlib.import_module(_mod)
+        except ImportError: _miss.append(_pkg)
+    if _miss:
+        print(f"[PST] Installing: {', '.join(_miss)} ...")
+        for _pkg in _miss:
+            if not _pip_install(_pkg):
+                print(f"  FAILED: {_pkg}  ->  pip install {_pkg}"); sys.exit(1)
+        print("[PST] Ready.")
+    for _mod, _pkg in _OPTIONAL.items():
+        try: importlib.import_module(_mod)
+        except ImportError: _pip_install(_pkg)
 
 # ==============================================================================
 #  SECTION 2 : IMPORTS
 # ==============================================================================
 import json, uuid, math, threading, csv
+from html import escape
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from datetime import datetime, timedelta
@@ -58,6 +63,17 @@ import customtkinter as ctk
 import matplotlib; matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from tracker_core import (
+    adherence_for_day,
+    adherence_rows,
+    dose_status,
+    due_doses as scheduled_due_doses,
+    export_monthly_adherence_pdf,
+    latest_dose_action,
+    normalize_schedule_times,
+    reorder_alerts as forecast_reorder_alerts,
+    scheduled_doses_for_date,
+)
 
 try:
     from PIL import Image, ImageDraw; HAS_PIL = True
@@ -65,6 +81,12 @@ except ImportError: HAS_PIL = False
 try:
     import pystray; HAS_TRAY = True
 except ImportError: HAS_TRAY = False
+try:
+    from winrt.windows.data.xml.dom import XmlDocument
+    from winrt.windows.ui.notifications import ToastNotification, ToastNotificationManager
+    HAS_NATIVE_TOAST = True
+except ImportError:
+    HAS_NATIVE_TOAST = False
 
 # ==============================================================================
 #  SECTION 3 : THEME & CONSTANTS
@@ -99,7 +121,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATA_FILE = DATA_DIR / "tracker_data.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
-                    "always_on_top":True,"opacity":0.96,"active_page":"dashboard"}
+                    "always_on_top":True,"opacity":0.96,"active_page":"dashboard",
+                    "reminders_enabled":True,"reminder_grace_minutes":30,
+                    "reminder_snooze_minutes":15,"low_stock_lead_days":7,
+                    "native_notifications":True}
 
 class DataManager:
     def __init__(self):
@@ -146,23 +171,64 @@ class DataManager:
             if m["id"]==mid: return m
         return None
 
-    def log_taken(self, mid, name):
-        self.data["med_log"].append({"med_id":mid,"med_name":name,
-            "date":datetime.now().strftime("%Y-%m-%d"),"time":datetime.now().strftime("%H:%M:%S"),"action":"taken"})
+    def _dose_for_med(self, mid, now=None):
+        now=now or datetime.now()
         med=self.get_med(mid)
-        if med and med.get("supply") is not None and med["supply"]>0: med["supply"]-=1
-        self.save_data()
+        if not med: return None
+        candidates=scheduled_doses_for_date(med,now.date())
+        for dose in candidates:
+            if dose_status(dose,self.data["med_log"],now,int(self.settings.get("reminder_grace_minutes",30))) in {"due","snoozed","upcoming"}:
+                if not latest_dose_action(self.data["med_log"],dose) or latest_dose_action(self.data["med_log"],dose).get("action") not in {"taken","skipped"}:
+                    return dose
+        return candidates[0] if candidates else None
 
-    def undo_taken(self, mid, date=None):
+    def log_dose_action(self, mid, action="taken", dose=None, snooze_minutes=None, reason=""):
+        med=self.get_med(mid)
+        if not med: return False
+        now=datetime.now()
+        if dose is None: dose=self._dose_for_med(mid,now)
+        if isinstance(dose,dict):
+            dose_id=dose.get("dose_id"); scheduled_for=dose.get("scheduled_for"); dose_date=dose.get("date")
+        else:
+            dose_id=dose.dose_id if dose else None
+            scheduled_for=dose.scheduled_for.isoformat(timespec="minutes") if dose else None
+            dose_date=dose.date if dose else now.strftime("%Y-%m-%d")
+        if dose_id and any(l.get("dose_id")==dose_id and l.get("action") in {"taken","skipped"} for l in self.data["med_log"]):
+            return False
+        entry={"med_id":mid,"med_name":med.get("name",str(mid)),"date":dose_date or now.strftime("%Y-%m-%d"),
+               "time":now.strftime("%H:%M:%S"),"action":action,"logged_at":now.isoformat(timespec="seconds")}
+        if dose_id: entry.update({"dose_id":dose_id,"scheduled_for":scheduled_for})
+        if reason.strip(): entry["reason"]=reason.strip()
+        if action=="snoozed":
+            minutes=max(1,int(snooze_minutes or self.settings.get("reminder_snooze_minutes",15)))
+            entry["snooze_until"]=(now+timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        self.data["med_log"].append(entry)
+        if action=="taken" and med.get("supply") is not None and med["supply"]>0: med["supply"]-=1
+        self.save_data()
+        return True
+
+    def log_taken(self, mid, name=None, dose=None):
+        return self.log_dose_action(mid,"taken",dose=dose)
+
+    def log_skipped(self, mid, dose=None, reason=""):
+        return self.log_dose_action(mid,"skipped",dose=dose,reason=reason)
+
+    def snooze_dose(self, mid, dose=None, minutes=None):
+        return self.log_dose_action(mid,"snoozed",dose=dose,snooze_minutes=minutes)
+
+    def undo_taken(self, mid, date=None, dose_id=None):
         date=date or datetime.now().strftime("%Y-%m-%d")
+        removed=False
         for i in range(len(self.data["med_log"])-1,-1,-1):
             l=self.data["med_log"][i]
-            if l["med_id"]==mid and l["date"]==date and l["action"]=="taken":
+            if l["med_id"]==mid and l["date"]==date and l["action"]=="taken" and (not dose_id or l.get("dose_id")==dose_id):
                 self.data["med_log"].pop(i)
                 med=self.get_med(mid)
                 if med and med.get("supply") is not None: med["supply"]+=1
+                removed=True
                 break
         self.save_data()
+        return removed
 
     def taken_today(self, mid):
         d=datetime.now().strftime("%Y-%m-%d")
@@ -171,12 +237,26 @@ class DataManager:
         return any(l["med_id"]==mid and l["date"]==d and l["action"]=="taken" for l in self.data["med_log"])
 
     def adherence_for_range(self, days=7):
-        result=[]; ids={m["id"] for m in self.meds}; total=len(ids) or 1
+        result=[]
         for i in range(days-1,-1,-1):
-            d=(datetime.now()-timedelta(days=i)).strftime("%Y-%m-%d")
-            taken=sum(1 for mid in ids if self.taken_on_date(mid,d))
-            result.append((d, taken/total))
+            day=datetime.now().date()-timedelta(days=i); d=day.strftime("%Y-%m-%d")
+            taken,total,_=adherence_for_day(self.meds,self.data["med_log"],day)
+            result.append((d, taken/total if total else 0))
         return result
+
+    def due_doses(self, now=None):
+        return scheduled_due_doses(self.meds,self.data["med_log"],now,int(self.settings.get("reminder_grace_minutes",30)))
+
+    def reorder_alerts(self, now=None):
+        return forecast_reorder_alerts(self.meds,self.data["med_log"],now,int(self.settings.get("low_stock_lead_days",7)))
+
+    def monthly_adherence_report(self, year=None, month=None):
+        now=datetime.now(); year=year or now.year; month=month or now.month
+        return adherence_rows(self.meds,self.data["med_log"],year,month)
+
+    def export_monthly_adherence_pdf(self, path, year=None, month=None):
+        now=datetime.now(); year=year or now.year; month=month or now.month
+        return export_monthly_adherence_pdf(path,self.meds,self.data["med_log"],year,month)
 
     def log_sleep(self, entry):
         entry.setdefault("logged_at",datetime.now().isoformat())
@@ -193,12 +273,12 @@ class DataManager:
         return r
 
     def pill_streak(self):
-        ids={m["id"] for m in self.meds}
-        if not ids: return 0
+        if not self.meds: return 0
         streak=0
         for i in range(365):
-            d=(datetime.now()-timedelta(days=i)).strftime("%Y-%m-%d")
-            if all(self.taken_on_date(mid,d) for mid in ids): streak+=1
+            day=datetime.now().date()-timedelta(days=i)
+            taken,total,_=adherence_for_day(self.meds,self.data["med_log"],day)
+            if total and taken==total: streak+=1
             elif i==0: continue
             else: break
         return streak
@@ -234,20 +314,119 @@ class DataManager:
 # ==============================================================================
 class ToastManager:
     def __init__(self, parent): self.parent=parent; self._active=[]
-    def show(self, msg, kind="info", ms=3000):
+    def show(self, msg, kind="info", ms=3000, actions=None):
         clrs={"info":(T.BLUE,"#0d2240"),"success":(T.GREEN,"#0d2a1a"),
               "warning":(T.AMBER,"#2a2000"),"error":(T.RED,"#2a0d0d")}
         fg,bg=clrs.get(kind,clrs["info"])
         t=ctk.CTkFrame(self.parent,fg_color=bg,corner_radius=8,border_width=1,border_color=fg)
         t.place(relx=0.5,rely=0.0,anchor="n",y=8); t.lift()
         ctk.CTkLabel(t,text=f"  {msg}  ",text_color=fg,
-                      font=ctk.CTkFont(size=12,weight="bold")).pack(padx=12,pady=8)
+                      font=ctk.CTkFont(size=12,weight="bold")).pack(padx=12,pady=(8,4))
+        if actions:
+            ar=ctk.CTkFrame(t,fg_color="transparent"); ar.pack(fill="x",padx=8,pady=(0,8))
+            for label,callback in actions:
+                ctk.CTkButton(ar,text=label,height=25,font=ctk.CTkFont(size=10,weight="bold"),
+                              fg_color=T.SURFACE,hover_color=T.HOVER,text_color=fg,
+                              command=lambda cb=callback:self._run_action(t,cb)).pack(side="left",fill="x",expand=True,padx=2)
         self._active.append(t)
         self.parent.after(ms, lambda: self._kill(t))
+        return t
+    def _run_action(self,t,callback):
+        self._kill(t)
+        try: callback()
+        except Exception: pass
     def _kill(self,t):
         try: t.destroy()
-        except: pass
+        except Exception: pass
         if t in self._active: self._active.remove(t)
+
+
+class NativeToastManager:
+    """Optional Windows toast provider with protocol-backed dose actions."""
+    APP_ID="PillSleepTracker.Pro"
+    def __init__(self, dm):
+        self.dm=dm
+        self.enabled=HAS_NATIVE_TOAST and sys.platform=="win32" and not os.environ.get("PST_TEST_MODE")
+    def show_dose(self,dose):
+        if not self.enabled or not self.dm.settings.get("native_notifications",True): return False
+        try:
+            from urllib.parse import quote
+            dose_id=quote(str(dose.get("dose_id","")),safe="")
+            name=str(dose.get("med_name","Medication"))
+            status=str(dose.get("status","due")).title()
+            xml=("<toast launch=\"pillsleeptracker://dose/view/{0}\"><visual><binding template=\"ToastGeneric\">"
+                 "<text>{1}</text><text>{2} dose scheduled for {3}</text></binding></visual><actions>"
+                 "<action content=\"Take\" activationType=\"protocol\" arguments=\"pillsleeptracker://dose/taken/{0}\"/>"
+                 "<action content=\"Snooze\" activationType=\"protocol\" arguments=\"pillsleeptracker://dose/snooze/{0}\"/>"
+                 "<action content=\"Skip\" activationType=\"protocol\" arguments=\"pillsleeptracker://dose/skipped/{0}\"/>"
+                 "</actions></toast>").format(dose_id,escape(name),escape(status),escape(str(dose.get("scheduled_for",""))))
+            doc=XmlDocument(); doc.load_xml(xml)
+            notification=ToastNotification(doc)
+            ToastNotificationManager.create_toast_notifier(self.APP_ID).show(notification)
+            return True
+        except Exception:
+            return False
+
+
+def _register_toast_protocol():
+    if sys.platform!="win32" or not HAS_NATIVE_TOAST: return
+    try:
+        import winreg
+        if _FROZEN:
+            command=f'"{sys.executable}" "%1"'
+        else:
+            command=f'"{sys.executable}" "{Path(__file__).resolve()}" "%1"'
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,r"Software\Classes\pillsleeptracker") as key:
+            winreg.SetValueEx(key,"",0,winreg.REG_SZ,"URL:PillSleepTracker Protocol")
+            winreg.SetValueEx(key,"URL Protocol",0,winreg.REG_SZ,"")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,r"Software\Classes\pillsleeptracker\shell\open\command") as key:
+            winreg.SetValueEx(key,"",0,winreg.REG_SZ,command)
+    except (OSError,ImportError):
+        pass
+
+
+class ReminderManager:
+    def __init__(self, app, dm, toast):
+        self.app=app; self.dm=dm; self.toast=toast; self.native=NativeToastManager(dm)
+        self._seen_doses=set(); self._seen_stock=set(); self._after_id=None
+    def start(self): self._check()
+    def stop(self):
+        if self._after_id:
+            try: self.app.after_cancel(self._after_id)
+            except Exception: pass
+            self._after_id=None
+    def _refresh(self):
+        try: self.app._nav(self.dm.settings.get("active_page","dashboard"))
+        except Exception: pass
+    def _take(self,dose):
+        if self.dm.log_dose_action(dose["med_id"],"taken",dose=dose):
+            self.toast.show(f"{dose['med_name']} taken","success"); self._refresh()
+    def _snooze(self,dose):
+        if self.dm.snooze_dose(dose["med_id"],dose=dose):
+            self.toast.show(f"Snoozed {dose['med_name']}","info"); self._seen_doses.discard(dose["dose_id"])
+    def _skip(self,dose):
+        if self.dm.log_skipped(dose["med_id"],dose=dose):
+            self.toast.show(f"Skipped {dose['med_name']}","warning"); self._refresh()
+    def _check(self):
+        if self.dm.settings.get("reminders_enabled",True):
+            for dose in self.dm.due_doses():
+                key=f"{dose['dose_id']}:{dose.get('status')}:{dose.get('snooze_until')}"
+                if key in self._seen_doses: continue
+                self._seen_doses.add(key)
+                label="Missed" if dose.get("status")=="missed" else "Dose due"
+                self.toast.show(f"{label}: {dose['med_name']}","warning",ms=12000,
+                                actions=[("Take",lambda d=dose:self._take(d)),
+                                         ("Snooze",lambda d=dose:self._snooze(d)),
+                                         ("Skip",lambda d=dose:self._skip(d))])
+                self.native.show_dose(dose)
+            today=datetime.now().strftime("%Y-%m-%d")
+            for alert in self.dm.reorder_alerts():
+                key=f"{today}:{alert['med_id']}"
+                if key in self._seen_stock: continue
+                self._seen_stock.add(key)
+                days=f"~{alert['days_left']} days left" if alert.get("days_left") is not None else "reorder soon"
+                self.toast.show(f"Low stock: {alert['name']} ({days})","warning",ms=10000)
+        self._after_id=self.app.after(60000,self._check)
 
 class StatCard(ctk.CTkFrame):
     def __init__(self, parent, title="", value="", sub="", accent=T.BLUE, **kw):
@@ -478,6 +657,7 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             if med.get("dosage"): det.append(med["dosage"])
             if med.get("frequency"): det.append(med["frequency"])
             if med.get("time_of_day"): det.append(med["time_of_day"])
+            if med.get("schedule_times"): det.append(" / ".join(med["schedule_times"]))
             if det: ctk.CTkLabel(info,text="  |  ".join(det),font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,anchor="w").pack(anchor="w")
             if med.get("supply") is not None:
                 s=med["supply"]; w_=med.get("supply_warn",7)
@@ -518,6 +698,8 @@ class MedicationsPage(ctk.CTkScrollableFrame):
         ctk.CTkOptionMenu(sc,variable=fv,values=["Daily","Twice Daily","3x Daily","Every Other Day","Weekly","As Needed"],
                            fg_color=T.INPUT_BG,button_color=T.BORDER,button_hover_color=T.HOVER,dropdown_fg_color=T.SURFACE).pack(fill="x",pady=(0,4))
         te=_f("Time of Day","e.g. Morning",med.get("time_of_day","") if ie else "")
+        schedule_value=",".join(med.get("schedule_times",[])) if ie and med.get("schedule_times") else ""
+        ste=_f("Schedule Times","HH:MM, HH:MM (blank uses frequency defaults)",schedule_value)
         ctk.CTkLabel(sc,text="Colour",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
         cv=ctk.StringVar(value="Blue")
         if ie:
@@ -548,8 +730,11 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             wn=7
             try: wn=int(we.get().strip())
             except: pass
+            try: schedule_times=normalize_schedule_times(ste.get(),fv.get())
+            except ValueError as exc:
+                messagebox.showwarning("Invalid schedule",str(exc),parent=dlg); return
             d={"name":n,"dosage":de.get().strip(),"frequency":fv.get(),"time_of_day":te.get().strip(),
-               "color":PILL_COLOURS.get(cv.get(),T.BLUE),"supply":sp,"supply_warn":wn,"notes":ntb.get("1.0","end").strip()}
+               "schedule_times":schedule_times,"color":PILL_COLOURS.get(cv.get(),T.BLUE),"supply":sp,"supply_warn":wn,"notes":ntb.get("1.0","end").strip()}
             if ie: d["active"]=av.get(); self.dm.update_med(med["id"],d); self.toast.show(f"{n} updated","success")
             else: self.dm.add_med(d); self.toast.show(f"{n} added!","success")
             dlg.destroy(); self.refresh()
@@ -774,8 +959,22 @@ class SettingsPage(ctk.CTkScrollableFrame):
         ctk.CTkSwitch(self,text="Always on Top",variable=self._av,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
                        fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
                        command=self._ta).pack(anchor="w",padx=T.PAD_LG,pady=4)
+        self._sect("Reminders")
+        self._rv=ctk.BooleanVar(value=self.dm.settings.get("reminders_enabled",True))
+        ctk.CTkSwitch(self,text="Dose reminders",variable=self._rv,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+                       fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
+                       command=self._tr).pack(anchor="w",padx=T.PAD_LG,pady=4)
+        for label,key,values in [("Grace window","reminder_grace_minutes",["15","30","60","120"]),
+                                 ("Snooze for","reminder_snooze_minutes",["5","15","30","60"]),
+                                 ("Reorder lead time","low_stock_lead_days",["3","7","14","30"])]:
+            rr=ctk.CTkFrame(self,fg_color="transparent"); rr.pack(fill="x",padx=T.PAD_LG,pady=2)
+            ctk.CTkLabel(rr,text=label,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC).pack(side="left")
+            ctk.CTkOptionMenu(rr,values=values,width=96,fg_color=T.INPUT_BG,button_color=T.BORDER,
+                              dropdown_fg_color=T.SURFACE,command=lambda v,k=key:self._rs(k,v)).set(str(self.dm.settings.get(key,values[0])))
+            menu=rr.winfo_children()[-1]; menu.pack(side="right")
         self._sect("Data Management")
         for txt,cmd,clr in [("Export Data (JSON)",self._exp,T.BLUE),("Export Pill Log (CSV)",self._csv,T.BLUE),
+                             ("Export Monthly Adherence (PDF)",self._pdf,T.PURPLE),
                              ("Import Data (JSON)",self._imp,T.BLUE),("Open Data Folder",self._folder,T.TEXT_SEC)]:
             ctk.CTkButton(self,text=txt,height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,hover_color=T.HOVER,
                            text_color=clr,border_width=1,border_color=T.BORDER,anchor="w",command=cmd).pack(fill="x",padx=T.PAD_LG,pady=2)
@@ -788,6 +987,8 @@ class SettingsPage(ctk.CTkScrollableFrame):
                       font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(4,T.PAD_LG))
     def _so(self,v): self.dm.settings["opacity"]=round(v,2); self.app.attributes("-alpha",v); self._ol.configure(text=f"{int(v*100)}%")
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
+    def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
+    def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
     def _exp(self):
         fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".json",filetypes=[("JSON","*.json")],initialfile="pillsleep_backup.json")
         if fp: DataManager._write(Path(fp),self.dm.data); messagebox.showinfo("Done",f"Exported to:\n{fp}",parent=self.winfo_toplevel())
@@ -798,6 +999,16 @@ class SettingsPage(ctk.CTkScrollableFrame):
                 w=csv.writer(f); w.writerow(["Date","Time","Medication","Action"])
                 for l in sorted(self.dm.data["med_log"],key=lambda x:x["date"]): w.writerow([l["date"],l.get("time",""),l["med_name"],l["action"]])
             messagebox.showinfo("Done",f"CSV exported to:\n{fp}",parent=self.winfo_toplevel())
+    def _pdf(self):
+        now=datetime.now()
+        fp=filedialog.asksaveasfilename(parent=self.winfo_toplevel(),defaultextension=".pdf",
+                                        filetypes=[("PDF","*.pdf")],initialfile=f"adherence_{now:%Y_%m}.pdf")
+        if fp:
+            try:
+                self.dm.export_monthly_adherence_pdf(fp,now.year,now.month)
+                messagebox.showinfo("Done",f"PDF exported to:\n{fp}",parent=self.winfo_toplevel())
+            except Exception as exc:
+                messagebox.showerror("Export failed",str(exc),parent=self.winfo_toplevel())
     def _imp(self):
         fp=filedialog.askopenfilename(parent=self.winfo_toplevel(),filetypes=[("JSON","*.json")])
         if fp:
@@ -846,6 +1057,8 @@ class PillSleepTrackerPro(ctk.CTk):
         self.content=ctk.CTkFrame(self.body,fg_color=T.BG,corner_radius=0); self.content.pack(side="left",fill="both",expand=True)
         self.pages={}; self._build_pages(); self._nav(s.get("active_page","dashboard"))
         self._autosave(); self._tray=None
+        _register_toast_protocol()
+        self.reminders=ReminderManager(self,self.dm,self.toast); self.reminders.start()
         if HAS_TRAY and HAS_PIL: threading.Thread(target=self._setup_tray,daemon=True).start()
 
     def _build_tb(self):
@@ -880,6 +1093,7 @@ class PillSleepTrackerPro(ctk.CTk):
         self.dm.save_settings(); self.after(30000,self._autosave)
 
     def _close(self):
+        if getattr(self,"reminders",None): self.reminders.stop()
         try: self.dm.settings.update({"window_x":self.winfo_x(),"window_y":self.winfo_y(),"window_w":self.winfo_width(),"window_h":self.winfo_height()})
         except: pass
         self.dm.save_settings(); self.dm.save_data()
@@ -902,6 +1116,24 @@ class PillSleepTrackerPro(ctk.CTk):
 # ==============================================================================
 #  SECTION 9 : ENTRY POINT
 # ==============================================================================
+def _handle_toast_action(uri):
+    """Apply a protocol toast action in a short-lived helper process."""
+    from urllib.parse import unquote, urlparse
+    parsed=urlparse(uri)
+    parts=[unquote(part) for part in parsed.path.strip("/").split("/") if part]
+    if parsed.scheme!="pillsleeptracker" or len(parts)<2 or parts[0]!="dose": return False
+    action,dose_id=parts[1],parts[2] if len(parts)>2 else ""
+    dm=DataManager()
+    dose=next((item for item in dm.due_doses() if item.get("dose_id")==dose_id),None)
+    if not dose: return False
+    if action=="taken": return dm.log_dose_action(dose["med_id"],"taken",dose=dose)
+    if action=="skipped": return dm.log_dose_action(dose["med_id"],"skipped",dose=dose)
+    if action=="snooze": return dm.snooze_dose(dose["med_id"],dose=dose)
+    return False
+
+
 if __name__=="__main__":
+    if len(sys.argv)>1 and sys.argv[1].startswith("pillsleeptracker://"):
+        _handle_toast_action(sys.argv[1]); sys.exit(0)
     app=PillSleepTrackerPro()
     app.mainloop()

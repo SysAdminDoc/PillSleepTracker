@@ -10,6 +10,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - **Quick Take** grid: one-click pill logging with undo, colour-coded by medication
 - Sleep summary card with score badge and streak counter
 - Low stock alerts for medications running low
+- Scheduled dose reminders with grace windows, snooze/taken/skipped actions, and reorder forecasting
 
 ### Medications
 - Full CRUD: add, edit, delete medications
@@ -35,6 +36,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - **Sleep Duration** line chart with area fill and 7-9h optimal zone
 - **Sleep Quality & Score** dual overlay (scatter + line)
 - **Sleep Factor Frequency** horizontal bar chart (colour-coded beneficial vs harmful)
+- Monthly adherence PDF export formatted for clinician review
 
 ### Settings
 - Window opacity slider (30-100%)
@@ -78,6 +80,12 @@ Double-click:  Launch-PillSleepTracker.bat
 pip install customtkinter matplotlib Pillow pystray
 python PillSleepTracker.py
 ```
+
+For a Windows distributable, build the onedir artifact with PyInstaller:
+```powershell
+python -m PyInstaller --noconfirm --clean --windowed --name PillSleepTracker --icon icon.ico --hidden-import numpy._core._exceptions PillSleepTracker.py
+```
+The launcher installs the optional WinRT notification components when native Windows toast actions are available.
 
 ## Data Storage
 
