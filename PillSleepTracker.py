@@ -54,7 +54,7 @@ if not _FROZEN:
 import json, uuid, math, threading, csv
 from html import escape
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, simpledialog
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections import defaultdict
@@ -68,16 +68,19 @@ from tracker_core import (
     adherence_rows,
     bedtime_consistency_coach,
     calculate_sleep_score,
+    check_interactions,
     dose_status,
     due_doses as scheduled_due_doses,
     export_monthly_adherence_pdf,
     latest_dose_action,
     import_wearable_csv,
+    hash_pin,
     MEQ_QUESTIONS,
     normalize_schedule_times,
     reorder_alerts as forecast_reorder_alerts,
     scheduled_doses_for_date,
     score_chronotype,
+    verify_pin,
 )
 
 try:
@@ -129,14 +132,21 @@ DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
                     "always_on_top":True,"opacity":0.96,"active_page":"dashboard",
                     "reminders_enabled":True,"reminder_grace_minutes":30,
                     "reminder_snooze_minutes":15,"low_stock_lead_days":7,
-                    "native_notifications":True}
+                    "native_notifications":True,"active_profile_id":"default"}
 
 class DataManager:
     def __init__(self):
         self.settings = self._load(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
         for k,v in DEFAULT_SETTINGS.items(): self.settings.setdefault(k,v)
-        self.data = self._load(DATA_FILE, {"medications":[],"med_log":[],"sleep_log":[]})
+        self.data = self._load(DATA_FILE, {"medications":[],"med_log":[],"sleep_log":[],"profiles":[]})
         for k in ("medications","med_log","sleep_log"): self.data.setdefault(k,[])
+        self.data.setdefault("profiles",[])
+        if not any(p.get("id")=="default" for p in self.data["profiles"]):
+            self.data["profiles"].append({"id":"default","name":"Default","pin_hash":""})
+        for key in ("medications","med_log","sleep_log"):
+            for item in self.data[key]: item.setdefault("profile_id","default")
+        if not any(p.get("id")==self.settings.get("active_profile_id") for p in self.data["profiles"]):
+            self.settings["active_profile_id"]="default"
 
     @staticmethod
     def _load(path, default):
@@ -158,23 +168,65 @@ class DataManager:
         except IOError: pass
 
     @property
-    def meds(self): return [m for m in self.data["medications"] if m.get("active",True)]
+    def profile_id(self): return self.settings.get("active_profile_id","default")
     @property
-    def all_meds(self): return self.data["medications"]
+    def profile(self): return next((p for p in self.data["profiles"] if p.get("id")==self.profile_id),self.data["profiles"][0])
+    @property
+    def profiles(self): return self.data["profiles"]
+    @property
+    def meds(self): return [m for m in self.data["medications"] if m.get("profile_id","default")==self.profile_id and m.get("active",True)]
+    @property
+    def all_meds(self): return [m for m in self.data["medications"] if m.get("profile_id","default")==self.profile_id]
+    @property
+    def sleep_entries(self): return [s for s in self.data["sleep_log"] if s.get("profile_id","default")==self.profile_id]
+    def _med_logs(self): return [l for l in self.data["med_log"] if l.get("profile_id","default")==self.profile_id]
+
+    def create_profile(self, name, pin=""):
+        name=str(name).strip()
+        if not name or any(p.get("name","").casefold()==name.casefold() for p in self.profiles): return None
+        profile={"id":f"profile-{uuid.uuid4().hex[:12]}","name":name,"pin_hash":hash_pin(str(pin))}
+        self.profiles.append(profile); self.save_data(); return profile
+    def switch_profile(self, profile_id, pin=""):
+        profile=next((p for p in self.profiles if p.get("id")==profile_id),None)
+        if not profile or not verify_pin(str(pin),profile.get("pin_hash","")): return False
+        self.settings["active_profile_id"]=profile_id; self.save_settings(); return True
+    def delete_profile(self, profile_id):
+        if profile_id=="default" or profile_id==self.profile_id: return False
+        if not any(p.get("id")==profile_id for p in self.profiles): return False
+        self.data["profiles"]=[p for p in self.profiles if p.get("id")!=profile_id]
+        for key in ("medications","med_log","sleep_log"): self.data[key]=[item for item in self.data[key] if item.get("profile_id","default")!=profile_id]
+        self.save_data(); return True
 
     def add_med(self, d):
         d.setdefault("id",str(uuid.uuid4())); d.setdefault("created",datetime.now().isoformat())
-        d.setdefault("active",True); self.data["medications"].append(d); self.save_data()
+        d.setdefault("active",True); d.setdefault("profile_id",self.profile_id); d.setdefault("clinician","")
+        d.setdefault("refill_history",[]); d.setdefault("dose_changes",[]); d.setdefault("photo_path","")
+        self.data["medications"].append(d); self.save_data()
     def update_med(self, mid, upd):
+        upd=dict(upd)
         for m in self.data["medications"]:
-            if m["id"]==mid: m.update(upd); break
+            if m["id"]==mid and m.get("profile_id","default")==self.profile_id:
+                note=upd.pop("dose_change_note","") if isinstance(upd,dict) else ""
+                if "dosage" in upd and upd.get("dosage")!=m.get("dosage"):
+                    m.setdefault("dose_changes",[]).append({"date":datetime.now().strftime("%Y-%m-%d"),"from":m.get("dosage",""),"to":upd.get("dosage",""),"notes":note})
+                m.update(upd); break
         self.save_data()
     def delete_med(self, mid):
-        self.data["medications"]=[m for m in self.data["medications"] if m["id"]!=mid]; self.save_data()
+        self.data["medications"]=[m for m in self.data["medications"] if m["id"]!=mid or m.get("profile_id","default")!=self.profile_id]; self.save_data()
     def get_med(self, mid):
         for m in self.data["medications"]:
-            if m["id"]==mid: return m
+            if m["id"]==mid and m.get("profile_id","default")==self.profile_id: return m
         return None
+    def record_refill(self, mid, quantity, note=""):
+        med=self.get_med(mid)
+        try: quantity=int(quantity)
+        except (TypeError,ValueError): return False
+        if not med or quantity<=0: return False
+        if med.get("supply") is None: med["supply"]=quantity
+        else: med["supply"]+=quantity
+        med.setdefault("refill_history",[]).append({"date":datetime.now().strftime("%Y-%m-%d"),"quantity":quantity,"note":str(note).strip()})
+        self.save_data(); return True
+    def interaction_findings(self): return check_interactions(self.meds)
 
     def _dose_for_med(self, mid, now=None):
         now=now or datetime.now()
@@ -182,8 +234,9 @@ class DataManager:
         if not med: return None
         candidates=scheduled_doses_for_date(med,now.date())
         for dose in candidates:
-            if dose_status(dose,self.data["med_log"],now,int(self.settings.get("reminder_grace_minutes",30))) in {"due","snoozed","upcoming"}:
-                if not latest_dose_action(self.data["med_log"],dose) or latest_dose_action(self.data["med_log"],dose).get("action") not in {"taken","skipped"}:
+            logs=self._med_logs()
+            if dose_status(dose,logs,now,int(self.settings.get("reminder_grace_minutes",30))) in {"due","snoozed","upcoming"}:
+                if not latest_dose_action(logs,dose) or latest_dose_action(logs,dose).get("action") not in {"taken","skipped"}:
                     return dose
         return candidates[0] if candidates else None
 
@@ -198,9 +251,9 @@ class DataManager:
             dose_id=dose.dose_id if dose else None
             scheduled_for=dose.scheduled_for.isoformat(timespec="minutes") if dose else None
             dose_date=dose.date if dose else now.strftime("%Y-%m-%d")
-        if dose_id and any(l.get("dose_id")==dose_id and l.get("action") in {"taken","skipped"} for l in self.data["med_log"]):
+        if dose_id and any(l.get("dose_id")==dose_id and l.get("action") in {"taken","skipped"} for l in self._med_logs()):
             return False
-        entry={"med_id":mid,"med_name":med.get("name",str(mid)),"date":dose_date or now.strftime("%Y-%m-%d"),
+        entry={"med_id":mid,"med_name":med.get("name",str(mid)),"profile_id":self.profile_id,"date":dose_date or now.strftime("%Y-%m-%d"),
                "time":now.strftime("%H:%M:%S"),"action":action,"logged_at":now.isoformat(timespec="seconds")}
         if dose_id: entry.update({"dose_id":dose_id,"scheduled_for":scheduled_for})
         if reason.strip(): entry["reason"]=reason.strip()
@@ -226,7 +279,7 @@ class DataManager:
         removed=False
         for i in range(len(self.data["med_log"])-1,-1,-1):
             l=self.data["med_log"][i]
-            if l["med_id"]==mid and l["date"]==date and l["action"]=="taken" and (not dose_id or l.get("dose_id")==dose_id):
+            if l.get("profile_id","default")==self.profile_id and l["med_id"]==mid and l["date"]==date and l["action"]=="taken" and (not dose_id or l.get("dose_id")==dose_id):
                 self.data["med_log"].pop(i)
                 med=self.get_med(mid)
                 if med and med.get("supply") is not None: med["supply"]+=1
@@ -237,44 +290,45 @@ class DataManager:
 
     def taken_today(self, mid):
         d=datetime.now().strftime("%Y-%m-%d")
-        return any(l["med_id"]==mid and l["date"]==d and l["action"]=="taken" for l in self.data["med_log"])
+        return any(l.get("profile_id","default")==self.profile_id and l["med_id"]==mid and l["date"]==d and l["action"]=="taken" for l in self.data["med_log"])
     def taken_on_date(self, mid, d):
-        return any(l["med_id"]==mid and l["date"]==d and l["action"]=="taken" for l in self.data["med_log"])
+        return any(l.get("profile_id","default")==self.profile_id and l["med_id"]==mid and l["date"]==d and l["action"]=="taken" for l in self.data["med_log"])
 
     def adherence_for_range(self, days=7):
         result=[]
         for i in range(days-1,-1,-1):
             day=datetime.now().date()-timedelta(days=i); d=day.strftime("%Y-%m-%d")
-            taken,total,_=adherence_for_day(self.meds,self.data["med_log"],day)
+            taken,total,_=adherence_for_day(self.meds,self._med_logs(),day)
             result.append((d, taken/total if total else 0))
         return result
 
     def due_doses(self, now=None):
-        return scheduled_due_doses(self.meds,self.data["med_log"],now,int(self.settings.get("reminder_grace_minutes",30)))
+        return scheduled_due_doses(self.meds,self._med_logs(),now,int(self.settings.get("reminder_grace_minutes",30)))
 
     def reorder_alerts(self, now=None):
-        return forecast_reorder_alerts(self.meds,self.data["med_log"],now,int(self.settings.get("low_stock_lead_days",7)))
+        return forecast_reorder_alerts(self.meds,self._med_logs(),now,int(self.settings.get("low_stock_lead_days",7)))
 
     def monthly_adherence_report(self, year=None, month=None):
         now=datetime.now(); year=year or now.year; month=month or now.month
-        return adherence_rows(self.meds,self.data["med_log"],year,month)
+        return adherence_rows(self.meds,self._med_logs(),year,month)
 
     def export_monthly_adherence_pdf(self, path, year=None, month=None):
         now=datetime.now(); year=year or now.year; month=month or now.month
-        return export_monthly_adherence_pdf(path,self.meds,self.data["med_log"],year,month)
+        return export_monthly_adherence_pdf(path,self.meds,self._med_logs(),year,month)
 
     def log_sleep(self, entry):
         entry.setdefault("id",str(uuid.uuid4()))
         entry.setdefault("logged_at",datetime.now().isoformat())
         entry.setdefault("is_nap",False)
+        entry.setdefault("profile_id",self.profile_id)
         if entry.get("is_nap"):
-            self.data["sleep_log"]=[s for s in self.data["sleep_log"] if s.get("id")!=entry.get("id")]
+            self.data["sleep_log"]=[s for s in self.data["sleep_log"] if not (s.get("profile_id","default")==self.profile_id and s.get("id")==entry.get("id"))]
         else:
-            self.data["sleep_log"]=[s for s in self.data["sleep_log"] if s.get("date")!=entry["date"] or s.get("is_nap",False)]
+            self.data["sleep_log"]=[s for s in self.data["sleep_log"] if s.get("profile_id","default")!=self.profile_id or s.get("date")!=entry["date"] or s.get("is_nap",False)]
         self.data["sleep_log"].append(entry); self.save_data()
     def get_sleep(self, d):
         for s in self.data["sleep_log"]:
-            if s.get("date")==d and not s.get("is_nap",False): return s
+            if s.get("profile_id","default")==self.profile_id and s.get("date")==d and not s.get("is_nap",False): return s
         return None
     def sleep_for_range(self, days=14):
         r=[]
@@ -283,7 +337,7 @@ class DataManager:
         return r
     def import_sleep_csv(self, path, provider=None):
         entries=import_wearable_csv(path,provider)
-        existing={(s.get("source"),s.get("source_id")) for s in self.data["sleep_log"] if s.get("source")}
+        existing={(s.get("source"),s.get("source_id")) for s in self.sleep_entries if s.get("source")}
         added=0
         for entry in entries:
             if (entry.get("source"),entry.get("source_id")) in existing:
@@ -296,7 +350,7 @@ class DataManager:
         streak=0
         for i in range(365):
             day=datetime.now().date()-timedelta(days=i)
-            taken,total,_=adherence_for_day(self.meds,self.data["med_log"],day)
+            taken,total,_=adherence_for_day(self.meds,self._med_logs(),day)
             if total and taken==total: streak+=1
             elif i==0: continue
             else: break
@@ -374,7 +428,7 @@ class NativeToastManager:
 
 
 def _register_toast_protocol():
-    if sys.platform!="win32" or not HAS_NATIVE_TOAST: return
+    if sys.platform!="win32" or not HAS_NATIVE_TOAST or os.environ.get("PST_TEST_MODE"): return
     try:
         import winreg
         if _FROZEN:
@@ -637,6 +691,9 @@ class MedicationsPage(ctk.CTkScrollableFrame):
     def _build(self):
         hdr=ctk.CTkFrame(self,fg_color="transparent"); hdr.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
         ctk.CTkLabel(hdr,text="Medications",font=ctk.CTkFont(size=20,weight="bold"),text_color=T.TEXT).pack(side="left")
+        ctk.CTkButton(hdr,text="Check interactions",height=30,width=128,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+                       hover_color=T.HOVER,text_color=T.AMBER,border_width=1,border_color=T.BORDER,
+                       command=self._check_interactions).pack(side="right",padx=(4,0))
         ctk.CTkButton(hdr,text="+ Add",height=32,width=80,font=ctk.CTkFont(size=12,weight="bold"),
                        fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,command=self._add).pack(side="right")
         self._lf=ctk.CTkFrame(self,fg_color="transparent"); self._lf.pack(fill="both",expand=True,padx=T.PAD_MD)
@@ -663,6 +720,7 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             if med.get("frequency"): det.append(med["frequency"])
             if med.get("time_of_day"): det.append(med["time_of_day"])
             if med.get("schedule_times"): det.append(" / ".join(med["schedule_times"]))
+            if med.get("clinician"): det.append(f"Prescriber: {med['clinician']}")
             if det: ctk.CTkLabel(info,text="  |  ".join(det),font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,anchor="w").pack(anchor="w")
             if med.get("supply") is not None:
                 s=med["supply"]; w_=med.get("supply_warn",7)
@@ -677,18 +735,46 @@ class MedicationsPage(ctk.CTkScrollableFrame):
                     ctk.CTkButton(btns,text="Take",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.BTN_PRI,
                                    hover_color=T.BTN_PRI_H,command=lambda m=med:self._take(m)).pack(pady=1)
             ctk.CTkButton(btns,text="Edit",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
-                           hover_color=T.HOVER,text_color=T.BLUE,command=lambda m=med:self._edit(m)).pack(pady=1)
+                            hover_color=T.HOVER,text_color=T.BLUE,command=lambda m=med:self._edit(m)).pack(pady=1)
+            ctk.CTkButton(btns,text="Refill",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+                           hover_color=T.HOVER,text_color=T.TEAL,command=lambda m=med:self._refill(m)).pack(pady=1)
+            if med.get("refill_history") or med.get("dose_changes") or med.get("photo_path"):
+                ctk.CTkButton(btns,text="History",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+                               hover_color=T.HOVER,text_color=T.TEXT_SEC,command=lambda m=med:self._history(m)).pack(pady=1)
 
     def _take(self,m): self.dm.log_taken(m["id"],m["name"]); self.toast.show(f"{m['name']} taken!","success"); self.refresh()
     def _undo(self,m): self.dm.undo_taken(m["id"]); self.toast.show(f"{m['name']} undone","info"); self.refresh()
     def _add(self): self._form(None)
     def _edit(self, med): self._form(med)
+    def _refill(self, med):
+        quantity=simpledialog.askinteger("Refill",f"How many doses were added to {med['name']}?",parent=self.winfo_toplevel(),minvalue=1)
+        if quantity:
+            note=simpledialog.askstring("Refill note","Optional note (pharmacy, lot, etc.):",parent=self.winfo_toplevel()) or ""
+            if self.dm.record_refill(med["id"],quantity,note):
+                self.toast.show(f"Added {quantity} doses to {med['name']}","success"); self.refresh()
+    def _history(self, med):
+        lines=[f"Prescriber: {med.get('clinician') or 'Not set'}"]
+        if med.get("photo_path"): lines.append(f"Reference photo: {med['photo_path']}")
+        if med.get("refill_history"):
+            lines.append("Refills:")
+            lines.extend(f"  {item.get('date','')}: +{item.get('quantity',0)}  {item.get('note','')}" for item in med["refill_history"][-8:])
+        if med.get("dose_changes"):
+            lines.append("Dose changes:")
+            lines.extend(f"  {item.get('date','')}: {item.get('from','—')} -> {item.get('to','—')}  {item.get('notes','')}" for item in med["dose_changes"][-8:])
+        messagebox.showinfo(f"{med['name']} history","\n".join(lines),parent=self.winfo_toplevel())
+    def _check_interactions(self):
+        findings=self.dm.interaction_findings()
+        if findings:
+            text="\n\n".join(f"[{item['severity'].upper()}] {', '.join(item['medications'])}\n{item['message']}" for item in findings)
+        else:
+            text="No matches in the small offline screening list."
+        messagebox.showinfo("Offline interaction screen",text+"\n\nThis is not a complete interaction checker. Confirm every combination with a pharmacist.",parent=self.winfo_toplevel())
 
     def _form(self, med):
         if self._dlg and self._dlg.winfo_exists(): self._dlg.focus(); return
         ie=med is not None
         dlg=ctk.CTkToplevel(self.winfo_toplevel()); self._dlg=dlg
-        dlg.title("Edit Medication" if ie else "Add Medication"); dlg.geometry("400x580")
+        dlg.title("Edit Medication" if ie else "Add Medication"); dlg.geometry("420x720")
         dlg.configure(fg_color=T.BG); dlg.attributes("-topmost",True); dlg.resizable(False,True); dlg.grab_set()
         sc=ctk.CTkScrollableFrame(dlg,fg_color=T.BG); sc.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
         def _f(lbl,ph="",dv=""):
@@ -698,6 +784,8 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             return e
         ne=_f("Name *","e.g. Vitamin D",med["name"] if ie else "")
         de=_f("Dosage","e.g. 1000 IU",med.get("dosage","") if ie else "")
+        ce=_f("Prescribing Clinician","Optional",med.get("clinician","") if ie else "")
+        dnote=_f("Dose Change Note","Only used when editing dosage","")
         ctk.CTkLabel(sc,text="Frequency",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
         fv=ctk.StringVar(value=med.get("frequency","Daily") if ie else "Daily")
         ctk.CTkOptionMenu(sc,variable=fv,values=["Daily","Twice Daily","3x Daily","Every Other Day","Weekly","As Needed"],
@@ -717,6 +805,9 @@ class MedicationsPage(ctk.CTkScrollableFrame):
                            command=lambda v:cp.configure(fg_color=PILL_COLOURS.get(v,T.BLUE))).pack(side="left",fill="x",expand=True)
         se=_f("Supply Count","Leave blank to skip",str(med["supply"]) if ie and med.get("supply") is not None else "")
         we=_f("Low Stock Warning","Default: 7",str(med.get("supply_warn",7)) if ie else "7")
+        pe=_f("Reference Photo","For travel identification; no automatic identification",med.get("photo_path","") if ie else "")
+        ctk.CTkButton(sc,text="Browse photo…",height=28,fg_color=T.SURFACE,hover_color=T.HOVER,text_color=T.TEAL,
+                      command=lambda:self._browse_photo(pe)).pack(anchor="w",pady=(0,4))
         ctk.CTkLabel(sc,text="Notes",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
         ntb=ctk.CTkTextbox(sc,height=50,fg_color=T.INPUT_BG,border_color=T.INPUT_BD,border_width=1); ntb.pack(fill="x",pady=(0,4))
         if ie and med.get("notes"): ntb.insert("1.0",med["notes"])
@@ -738,8 +829,10 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             try: schedule_times=normalize_schedule_times(ste.get(),fv.get())
             except ValueError as exc:
                 messagebox.showwarning("Invalid schedule",str(exc),parent=dlg); return
-            d={"name":n,"dosage":de.get().strip(),"frequency":fv.get(),"time_of_day":te.get().strip(),
-               "schedule_times":schedule_times,"color":PILL_COLOURS.get(cv.get(),T.BLUE),"supply":sp,"supply_warn":wn,"notes":ntb.get("1.0","end").strip()}
+            d={"name":n,"dosage":de.get().strip(),"clinician":ce.get().strip(),"frequency":fv.get(),"time_of_day":te.get().strip(),
+               "schedule_times":schedule_times,"color":PILL_COLOURS.get(cv.get(),T.BLUE),"supply":sp,"supply_warn":wn,
+               "photo_path":pe.get().strip(),"notes":ntb.get("1.0","end").strip()}
+            if ie: d["dose_change_note"]=dnote.get().strip()
             if ie: d["active"]=av.get(); self.dm.update_med(med["id"],d); self.toast.show(f"{n} updated","success")
             else: self.dm.add_med(d); self.toast.show(f"{n} added!","success")
             dlg.destroy(); self.refresh()
@@ -753,6 +846,10 @@ class MedicationsPage(ctk.CTkScrollableFrame):
                            font=ctk.CTkFont(size=13,weight="bold"),command=_del).pack(side="left",fill="x",expand=True,padx=(4,4))
         ctk.CTkButton(br,text="Cancel",fg_color=T.SURFACE,hover_color=T.HOVER,height=34,text_color=T.TEXT_SEC,
                        command=dlg.destroy).pack(side="right",fill="x",expand=True,padx=(4,0))
+    def _browse_photo(self, entry):
+        fp=filedialog.askopenfilename(parent=self.winfo_toplevel(),filetypes=[("Images","*.png *.jpg *.jpeg *.webp"),("All files","*.*")])
+        if fp:
+            entry.delete(0,"end"); entry.insert(0,fp)
 
 # ── 7C : SLEEP ───────────────────────────────────────────────────────────────
 class SleepPage(ctk.CTkScrollableFrame):
@@ -861,7 +958,7 @@ class SleepPage(ctk.CTkScrollableFrame):
             messagebox.showerror("Import failed",str(exc),parent=self.winfo_toplevel())
     def _refresh_coach(self):
         for w in self._coach.winfo_children(): w.destroy()
-        coach=bedtime_consistency_coach(self.dm.data["sleep_log"])
+        coach=bedtime_consistency_coach(self.dm.sleep_entries)
         row=ctk.CTkFrame(self._coach,fg_color="transparent"); row.pack(fill="x",padx=T.PAD_MD,pady=T.PAD_SM)
         left=ctk.CTkFrame(row,fg_color="transparent"); left.pack(side="left",fill="x",expand=True)
         ctk.CTkLabel(left,text="Bedtime coach",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEAL).pack(anchor="w")
@@ -871,7 +968,7 @@ class SleepPage(ctk.CTkScrollableFrame):
     def refresh(self):
         self._refresh_coach()
         for w in self._hf.winfo_children(): w.destroy()
-        entries=sorted(self.dm.data["sleep_log"],key=lambda s:s["date"],reverse=True)[:10]
+        entries=sorted(self.dm.sleep_entries,key=lambda s:s["date"],reverse=True)[:10]
         if not entries: ctk.CTkLabel(self._hf,text="No entries yet.",font=ctk.CTkFont(size=12),text_color=T.TEXT_MUTED).pack(pady=T.PAD_LG); return
         for s in entries:
             q=s.get("quality",3); dh,dm_=s.get("duration_min",0)//60,s.get("duration_min",0)%60; sc=s.get("score","--")
@@ -1028,6 +1125,16 @@ class SettingsPage(ctk.CTkScrollableFrame):
         ctk.CTkButton(self,text="Take 5-question MEQ quiz",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
                       hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._quiz).pack(fill="x",padx=T.PAD_LG,pady=2)
+        self._sect("Profiles")
+        self._profile_label=ctk.CTkLabel(self,text="",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC)
+        self._profile_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
+        self._profile_menu=ctk.CTkOptionMenu(self,values=[],width=220,fg_color=T.INPUT_BG,button_color=T.BORDER,
+                                             dropdown_fg_color=T.SURFACE,command=self._switch_profile)
+        self._profile_menu.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
+        ctk.CTkButton(self,text="Add profile",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+                      hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
+                      anchor="w",command=self._add_profile).pack(fill="x",padx=T.PAD_LG,pady=2)
+        self._refresh_profile_controls()
         self._sect("Data Management")
         for txt,cmd,clr in [("Export Data (JSON)",self._exp,T.BLUE),("Export Pill Log (CSV)",self._csv,T.BLUE),
                              ("Export Monthly Adherence (PDF)",self._pdf,T.PURPLE),
@@ -1045,6 +1152,34 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
     def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
     def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
+    def _refresh_profile_controls(self):
+        names=[str(profile.get("name","Profile")) for profile in self.dm.profiles]
+        current=str(self.dm.profile.get("name","Default"))
+        self._profile_menu.configure(values=names)
+        self._profile_menu.set(current)
+        self._profile_label.configure(text=f"Active profile: {current}")
+    def _switch_profile(self,name):
+        profile=next((item for item in self.dm.profiles if item.get("name")==name),None)
+        if not profile or profile.get("id")==self.dm.profile_id:
+            return
+        pin=""
+        if profile.get("pin_hash"):
+            pin=simpledialog.askstring("Profile PIN",f"Enter the PIN for {name}:",show="*",parent=self.winfo_toplevel())
+            if pin is None:
+                self._refresh_profile_controls(); return
+        if not self.dm.switch_profile(profile["id"],pin):
+            messagebox.showwarning("Profile locked","That PIN was not accepted.",parent=self.winfo_toplevel())
+            self._refresh_profile_controls(); return
+        self._refresh_profile_controls(); self.app._nav("dashboard")
+    def _add_profile(self):
+        name=simpledialog.askstring("Add profile","Name for the new household profile:",parent=self.winfo_toplevel())
+        if name is None: return
+        pin=simpledialog.askstring("Set profile PIN","Optional PIN (leave blank for no PIN):",show="*",parent=self.winfo_toplevel())
+        if pin is None: return
+        profile=self.dm.create_profile(name,pin)
+        if not profile:
+            messagebox.showwarning("Profile unavailable","Use a unique non-empty profile name.",parent=self.winfo_toplevel()); return
+        self.dm.switch_profile(profile["id"],pin); self._refresh_profile_controls(); self.app._nav("dashboard")
     def _quiz(self):
         dlg=ctk.CTkToplevel(self.winfo_toplevel()); dlg.title("Chronotype quiz"); dlg.geometry("520x560"); dlg.configure(fg_color=T.BG); dlg.attributes("-topmost",True); dlg.grab_set()
         sc=ctk.CTkScrollableFrame(dlg,fg_color=T.BG); sc.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
@@ -1107,7 +1242,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _reset(self):
         if messagebox.askyesno("Reset","DELETE all data?\nCannot be undone!",parent=self.winfo_toplevel()):
             self.dm.data={"medications":[],"med_log":[],"sleep_log":[]}; self.dm.save_data()
-    def refresh(self): pass
+    def refresh(self): self._refresh_profile_controls()
 
 # ==============================================================================
 #  SECTION 8 : MAIN APPLICATION

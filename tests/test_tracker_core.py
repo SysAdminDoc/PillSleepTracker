@@ -4,13 +4,16 @@ from tracker_core import (
     adherence_for_day,
     bedtime_consistency_coach,
     calculate_sleep_score,
+    check_interactions,
     dose_status,
     due_doses,
     export_monthly_adherence_pdf,
+    hash_pin,
     import_wearable_csv,
     reorder_alerts,
     score_chronotype,
     scheduled_doses_for_date,
+    verify_pin,
 )
 
 
@@ -126,3 +129,18 @@ def test_bedtime_coach_ignores_naps_and_meq_changes_weights():
     morning_score = calculate_sleep_score(360, 3, ["22:00", "22:10", "22:05"], "Morning")
     intermediate_score = calculate_sleep_score(360, 3, ["22:00", "22:10", "22:05"], "Intermediate")
     assert morning_score != intermediate_score
+
+
+def test_offline_interaction_screen_requires_distinct_drug_matches():
+    findings = check_interactions([{"name": "Warfarin 5 mg"}, {"name": "Ibuprofen"}])
+    assert findings[0]["severity"] == "high"
+    assert check_interactions([{"name": "Warfarin"}, {"name": "Vitamin D"}]) == []
+    assert check_interactions([{"name": "Warfarin"}, {"name": "Warfarin 2 mg"}]) == []
+
+
+def test_profile_pin_hash_is_salted_and_verifiable():
+    encoded = hash_pin("2468")
+    assert encoded and encoded != "2468"
+    assert verify_pin("2468", encoded)
+    assert not verify_pin("0000", encoded)
+    assert verify_pin("", "")

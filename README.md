@@ -14,9 +14,12 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 
 ### Medications
 - Full CRUD: add, edit, delete medications
-- Fields: Name, Dosage, Frequency, Time of Day, Colour Tag, Supply Count, Low Stock Warning, Notes
+- Fields: Name, Dosage, Frequency, Time of Day, Colour Tag, Supply Count, Low Stock Warning, Prescribing Clinician, Reference Photo, Notes
 - 10 colour options for visual differentiation
 - Supply tracking with automatic decrement on take
+- Refill history and dose titration history with notes
+- Small offline interaction screen with an explicit pharmacist-review disclaimer
+- Household profiles with optional PIN protection and isolated medication, log, and sleep data
 - Active/Inactive toggle for pausing medications
 - One-click Take/Undo from both Dashboard and Meds page
 
@@ -43,6 +46,8 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 ### Settings
 - Window opacity slider (30-100%)
 - Always-on-top toggle
+- Profile switcher and optional PIN-protected household profiles
+- Five-question MEQ chronotype quiz used to personalize sleep-score weighting
 - Export data as JSON backup
 - Export pill log as CSV
 - Import data from JSON (supports v1 format migration)
@@ -93,7 +98,7 @@ The launcher installs the optional WinRT notification components when native Win
 
 | File | Location | Contents |
 |------|----------|----------|
-| `tracker_data.json` | `%APPDATA%\PillSleepTracker\` | Medications, pill log, sleep log |
+| `tracker_data.json` | `%APPDATA%\PillSleepTracker\` | Profiles, medications, pill log, sleep log |
 | `settings.json` | `%APPDATA%\PillSleepTracker\` | Window state, preferences |
 
 Linux/macOS: `~/PillSleepTracker/`
@@ -106,10 +111,10 @@ PillSleepTrackerPro (CTk main window)
   +-- Sidebar (navigation + clock)
   +-- Content area (page switching)
        +-- DashboardPage (stat cards, quick take, sleep summary, alerts)
-       +-- MedicationsPage (CRUD list with take/undo)
+       +-- MedicationsPage (CRUD list, refills, dose history, interaction screen)
        +-- SleepPage (quick log, manual entry, history)
        +-- AnalyticsPage (4 matplotlib charts + summary stats)
-       +-- SettingsPage (appearance, data management, about)
+       +-- SettingsPage (appearance, profiles, data management, about)
   +-- ToastManager (overlay notifications)
   +-- DataManager (JSON persistence, query helpers, scoring)
 ```
@@ -131,11 +136,13 @@ The app uses a centralised theme class `T` with GitHub-Dark inspired colours:
 
 ## Sleep Score Algorithm
 
-The sleep score (0-100) is a composite of three factors:
+The sleep score (0-100) is a composite of three factors, with the duration and quality balance adjusted slightly by the optional MEQ chronotype profile:
 
 - **Duration (0-40 pts)**: Gaussian curve centred on 8 hours (480 min) with sigma of 90 min. Sleeping exactly 8 hours scores maximum points; deviations reduce the score smoothly.
 - **Quality (0-40 pts)**: Subjective rating multiplied by 8. An "Excellent" (5) rating gives the full 40 points.
 - **Consistency (0-20 pts)**: Calculated from the standard deviation of your bedtimes over the past 7 nights. Lower variance (more consistent bedtime) gives higher points.
+
+Without a chronotype profile, the default weights are 40/40/20. The quiz shifts those weights modestly toward a more morning- or evening-oriented pattern; it does not diagnose a sleep disorder.
 
 ## Customisation Ideas
 

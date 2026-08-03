@@ -8,7 +8,11 @@ be tested without creating a Tk window.
 from __future__ import annotations
 
 import csv
+import base64
+import hashlib
+import hmac
 import math
+import os
 import re
 from calendar import monthrange
 from dataclasses import dataclass
@@ -684,3 +688,67 @@ def calculate_sleep_score(
     }.get(str(chronotype or "intermediate").lower(), (40, 40, 20))
     score = duration * weights[0] + quality_value * weights[1] + consistency * weights[2]
     return int(min(100, max(0, round(score))))
+
+
+OFFLINE_INTERACTION_RULES = [
+    (("warfarin", "ibuprofen"), "high", "Warfarin and ibuprofen can increase bleeding risk."),
+    (("warfarin", "aspirin"), "high", "Warfarin and aspirin can increase bleeding risk."),
+    (("sildenafil", "nitroglycerin"), "high", "Sildenafil and nitrate medicines can cause a dangerous blood-pressure drop."),
+    (("sildenafil", "isosorbide"), "high", "Sildenafil and nitrate medicines can cause a dangerous blood-pressure drop."),
+    (("levothyroxine", "calcium"), "moderate", "Calcium can reduce levothyroxine absorption when taken too closely together."),
+    (("levothyroxine", "iron"), "moderate", "Iron can reduce levothyroxine absorption when taken too closely together."),
+    (("sertraline", "phenelzine"), "high", "Sertraline and MAOI medicines can cause a serious serotonin reaction."),
+    (("sertraline", "tranylcypromine"), "high", "Sertraline and MAOI medicines can cause a serious serotonin reaction."),
+]
+
+
+def check_interactions(medications: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Run a deliberately small, offline name-based safety screen.
+
+    This is not a substitute for a pharmacist, a prescription database, or a
+    clinician. It intentionally returns only conservative known-name matches.
+    """
+
+    named = [(str(medication.get("name", "")).strip(), str(medication.get("name", "")).lower()) for medication in medications]
+    findings: list[dict[str, Any]] = []
+    for terms, severity, message in OFFLINE_INTERACTION_RULES:
+        matched = []
+        for term in terms:
+            match = next((name for name, lowered in named if term in lowered and name not in matched), None)
+            if match is None:
+                break
+            matched.append(match)
+        if len(matched) == len(terms):
+            findings.append({
+                "medications": matched,
+                "severity": severity,
+                "message": message,
+                "source": "Offline name screen; confirm with a pharmacist",
+            })
+    return findings
+
+
+def hash_pin(pin: str, salt: bytes | None = None) -> str:
+    if not str(pin):
+        return ""
+    salt = salt or os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", str(pin).encode("utf-8"), salt, 120_000)
+    return "pbkdf2-sha256$120000${}${}".format(
+        base64.urlsafe_b64encode(salt).decode("ascii"),
+        base64.urlsafe_b64encode(digest).decode("ascii"),
+    )
+
+
+def verify_pin(pin: str, encoded: str) -> bool:
+    if not encoded:
+        return not str(pin)
+    try:
+        algorithm, iterations, salt_text, digest_text = encoded.split("$", 3)
+        if algorithm != "pbkdf2-sha256":
+            return False
+        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+        actual = hashlib.pbkdf2_hmac("sha256", str(pin).encode("utf-8"), salt, int(iterations))
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
