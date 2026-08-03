@@ -137,6 +137,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATA_FILE = DATA_DIR / "tracker_data.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
+                    "compact_mode":False,"compact_w":360,"compact_h":430,
                     "always_on_top":True,"opacity":0.96,"active_page":"dashboard",
                     "reminders_enabled":True,"reminder_grace_minutes":30,
                     "reminder_snooze_minutes":15,"low_stock_lead_days":7,
@@ -1199,6 +1200,13 @@ class SettingsPage(ctk.CTkScrollableFrame):
         ctk.CTkSwitch(self,text="Always on Top",variable=self._av,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
                        fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
                        command=self._ta).pack(anchor="w",padx=T.PAD_LG,pady=4)
+        self._cm=ctk.BooleanVar(value=self.dm.settings.get("compact_mode",False))
+        ctk.CTkSwitch(self,text="Compact today mode",variable=self._cm,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+                       fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
+                       command=self._tc).pack(anchor="w",padx=T.PAD_LG,pady=4)
+        ctk.CTkLabel(self,text="Shows the Dashboard only in a smaller widget. Use the title-bar button to expand.",
+                     font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
+                         anchor="w",padx=T.PAD_LG,pady=(0,4))
         self._sect("Reminders")
         self._rv=ctk.BooleanVar(value=self.dm.settings.get("reminders_enabled",True))
         ctk.CTkSwitch(self,text="Dose reminders",variable=self._rv,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
@@ -1269,6 +1277,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
                       font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(4,T.PAD_LG))
     def _so(self,v): self.dm.settings["opacity"]=round(v,2); self.app.attributes("-alpha",v); self._ol.configure(text=f"{int(v*100)}%")
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
+    def _tc(self): self.app._set_compact_mode(self._cm.get())
     def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
     def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
     def _refresh_encryption_controls(self):
@@ -1415,11 +1424,15 @@ class SettingsPage(ctk.CTkScrollableFrame):
         if messagebox.askyesno("Reset","DELETE all data?\nCannot be undone!",parent=self.winfo_toplevel()):
             self.dm.data=normalize_tracker_data({"medications":[],"med_log":[],"sleep_log":[],"profiles":[],"audit_log":[]})
             self.dm.settings["active_profile_id"]="default"; self.dm._audit("reset","tracker_data","",{},profile_id=""); self.dm.save_data(); self.dm.save_settings(); self.refresh()
-    def refresh(self): self._refresh_profile_controls(); self._refresh_encryption_controls(); self._refresh_sync_controls()
+    def refresh(self):
+        self._cm.set(self.dm.settings.get("compact_mode",False))
+        self._refresh_profile_controls(); self._refresh_encryption_controls(); self._refresh_sync_controls()
 
 # ==============================================================================
 #  SECTION 8 : MAIN APPLICATION
 # ==============================================================================
+PAGE_QUICK_KEYS = {"1":"dashboard","2":"meds","3":"sleep","4":"analytics","5":"settings"}
+
 class PillSleepTrackerPro(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -1436,6 +1449,8 @@ class PillSleepTrackerPro(ctk.CTk):
         self.sidebar=Sidebar(self.body,on_nav=self._nav); self.sidebar.pack(side="left",fill="y")
         self.content=ctk.CTkFrame(self.body,fg_color=T.BG,corner_radius=0); self.content.pack(side="left",fill="both",expand=True)
         self.pages={}; self._build_pages(); self._nav(s.get("active_page","dashboard"))
+        self.bind_all("<KeyPress>",self._quick_key)
+        self._apply_compact_mode()
         self._autosave(); self._tray=None
         _register_toast_protocol()
         self.reminders=ReminderManager(self,self.dm,self.toast); self.reminders.start()
@@ -1462,6 +1477,10 @@ class PillSleepTrackerPro(ctk.CTk):
         tl=ctk.CTkLabel(tb,text="  PillSleepTracker Pro",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT_SEC); tl.pack(side="left",padx=4)
         ctk.CTkButton(tb,text="\u2715",width=32,height=28,font=ctk.CTkFont(size=12),fg_color="transparent",hover_color=T.BTN_DNG,text_color=T.TEXT_SEC,command=self._close).pack(side="right",padx=2)
         ctk.CTkButton(tb,text="\u2014",width=32,height=28,font=ctk.CTkFont(size=10),fg_color="transparent",hover_color=T.HOVER,text_color=T.TEXT_SEC,command=self.iconify).pack(side="right",padx=2)
+        self._mode=ctk.CTkButton(tb,text="Expand" if self.dm.settings.get("compact_mode",False) else "Today",
+                                 width=58,height=28,font=ctk.CTkFont(size=10),fg_color="transparent",
+                                 hover_color=T.HOVER,text_color=T.BLUE,command=self._toggle_compact)
+        self._mode.pack(side="right",padx=2)
         self._pin=ctk.CTkButton(tb,text="\u25C9" if self.dm.settings["always_on_top"] else "\u25CB",width=32,height=28,font=ctk.CTkFont(size=14),
                                   fg_color="transparent",hover_color=T.HOVER,text_color=T.BLUE if self.dm.settings["always_on_top"] else T.TEXT_MUTED,command=self._toggle_pin)
         self._pin.pack(side="right",padx=2)
@@ -1472,6 +1491,38 @@ class PillSleepTrackerPro(ctk.CTk):
         self.dm.settings["always_on_top"]=not self.dm.settings["always_on_top"]; aot=self.dm.settings["always_on_top"]
         self.attributes("-topmost",aot); self._pin.configure(text="\u25C9" if aot else "\u25CB",text_color=T.BLUE if aot else T.TEXT_MUTED)
 
+    def _toggle_compact(self): self._set_compact_mode(not self.dm.settings.get("compact_mode",False))
+    def _set_compact_mode(self,enabled):
+        self.dm.settings["compact_mode"]=bool(enabled); self.dm.save_settings(); self._apply_compact_mode()
+    def _apply_compact_mode(self):
+        compact=bool(self.dm.settings.get("compact_mode",False))
+        if compact:
+            self.minsize(320,360)
+            self.sidebar.pack_forget()
+            self.content.pack_forget(); self.content.pack(fill="both",expand=True)
+            self.geometry(f"{int(self.dm.settings.get('compact_w',360))}x{int(self.dm.settings.get('compact_h',430))}")
+            self._mode.configure(text="Expand")
+            self._nav("dashboard")
+        else:
+            self.minsize(420,500)
+            self.sidebar.pack_forget(); self.sidebar.pack(side="left",fill="y")
+            self.content.pack_forget(); self.content.pack(side="left",fill="both",expand=True)
+            self.geometry(f"{int(self.dm.settings.get('window_w',520))}x{int(self.dm.settings.get('window_h',740))}")
+            self._mode.configure(text="Today")
+            self._nav(self.dm.settings.get("active_page","dashboard"))
+
+    def _quick_key(self,event):
+        page=PAGE_QUICK_KEYS.get(getattr(event,"keysym", ""))
+        if not page: return
+        widget=getattr(event,"widget",None)
+        try:
+            if widget.winfo_toplevel() != self or widget.winfo_class() in {"Entry","Text","TEntry","TSpinbox","Spinbox"}:
+                return
+        except Exception:
+            return
+        self._nav(page)
+        return "break"
+
     def _build_pages(self):
         self.pages["dashboard"]=DashboardPage(self.content,self.dm,self.toast,on_nav=self._nav)
         self.pages["meds"]=MedicationsPage(self.content,self.dm,self.toast)
@@ -1480,17 +1531,30 @@ class PillSleepTrackerPro(ctk.CTk):
         self.pages["settings"]=SettingsPage(self.content,self.dm,self)
 
     def _nav(self,k):
+        if self.dm.settings.get("compact_mode",False) and k != "dashboard":
+            self.dm.settings["compact_mode"]=False
+            self._apply_compact_mode()
         for p in self.pages.values(): p.pack_forget()
         if k in self.pages: self.pages[k].pack(fill="both",expand=True); self.pages[k].refresh(); self.sidebar.set_active(k); self.dm.settings["active_page"]=k
 
     def _autosave(self):
-        try: self.dm.settings.update({"window_x":self.winfo_x(),"window_y":self.winfo_y(),"window_w":self.winfo_width(),"window_h":self.winfo_height()})
+        try:
+            self.dm.settings.update({"window_x":self.winfo_x(),"window_y":self.winfo_y()})
+            if self.dm.settings.get("compact_mode",False):
+                self.dm.settings.update({"compact_w":self.winfo_width(),"compact_h":self.winfo_height()})
+            else:
+                self.dm.settings.update({"window_w":self.winfo_width(),"window_h":self.winfo_height()})
         except: pass
         self.dm.save_settings(); self.after(30000,self._autosave)
 
     def _close(self):
         if getattr(self,"reminders",None): self.reminders.stop()
-        try: self.dm.settings.update({"window_x":self.winfo_x(),"window_y":self.winfo_y(),"window_w":self.winfo_width(),"window_h":self.winfo_height()})
+        try:
+            self.dm.settings.update({"window_x":self.winfo_x(),"window_y":self.winfo_y()})
+            if self.dm.settings.get("compact_mode",False):
+                self.dm.settings.update({"compact_w":self.winfo_width(),"compact_h":self.winfo_height()})
+            else:
+                self.dm.settings.update({"window_w":self.winfo_width(),"window_h":self.winfo_height()})
         except: pass
         self.dm.save_settings(); self.dm.save_data()
         if self._tray:

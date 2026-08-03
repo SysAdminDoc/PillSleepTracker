@@ -61,6 +61,8 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 
 ### Widget Behaviour
 - **Always-on-top** floating window with pin toggle
+- **Compact today mode** for a smaller dashboard-only widget, with an Expand control for the full shell
+- **Keyboard quick keys**: 1 Dashboard, 2 Meds, 3 Sleep, 4 Stats, 5 Settings (when a form field is not focused)
 - **Draggable** custom title bar
 - **Remembers** window position, size, opacity, and last active page
 - **System tray** icon with show/quit menu (Windows)
