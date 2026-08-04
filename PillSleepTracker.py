@@ -142,6 +142,7 @@ class T:
     INPUT_BG="#0d1117"; INPUT_BD="#30363d"
     BTN_PRI="#238636"; BTN_PRI_H="#2ea043"; BTN_DNG="#da3633"; BTN_DNG_H="#f85149"
     CHART_BG="#0d1117"; CHART_GRID="#21262d"; CHART_TICK="#8b949e"
+    FONT_SCALE=1.0
     PAD_XS=4; PAD_SM=8; PAD_MD=12; PAD_LG=16; PAD_XL=24; RAD=8
 
 _THEME_TOKEN_NAMES = ("BG","SURFACE","SURFACE_HI","CARD","SIDEBAR","SIDEBAR_ACT","TITLEBAR",
@@ -184,6 +185,56 @@ def _apply_windows_theme(follow=True):
     if "QUALITY_COLOURS" in globals():
         QUALITY_COLOURS.update({1:T.RED,2:"#f0883e",3:T.AMBER,4:T.GREEN,5:T.BLUE})
 
+def _apply_accessibility_theme(settings):
+    T.FONT_SCALE=_font_scale_value(settings.get("font_scale",1.0))
+    if not settings.get("accessibility_high_contrast",False):
+        return
+    palette={
+        "BG":"#000000","SURFACE":"#101010","SURFACE_HI":"#202020","CARD":"#101010",
+        "SIDEBAR":"#000000","SIDEBAR_ACT":"#202020","TITLEBAR":"#000000",
+        "BLUE":"#00e5ff","GREEN":"#00ff66","RED":"#ff6666","AMBER":"#ffff00",
+        "PURPLE":"#ff66ff","TEAL":"#00ffff","PINK":"#ff99cc",
+        "TEXT":"#ffffff","TEXT_SEC":"#ffffff","TEXT_MUTED":"#d0d0d0",
+        "BORDER":"#ffffff","DIVIDER":"#808080","HOVER":"#303030","ACTIVE":"#303030",
+        "INPUT_BG":"#000000","INPUT_BD":"#ffffff",
+        "BTN_PRI":"#006b2e","BTN_PRI_H":"#009944","BTN_DNG":"#990000","BTN_DNG_H":"#dd0000",
+        "CHART_BG":"#000000","CHART_GRID":"#666666","CHART_TICK":"#ffffff",
+    }
+    for name,value in palette.items():
+        setattr(T,name,value)
+    ctk.set_appearance_mode("dark")
+    if "PILL_COLOURS" in globals():
+        PILL_COLOURS.update({"Blue":T.BLUE,"Green":T.GREEN,"Red":T.RED,"Amber":T.AMBER,
+                             "Purple":T.PURPLE,"Teal":T.TEAL,"Pink":T.PINK,
+                             "Cyan":T.TEAL,"White":T.TEXT})
+    if "QUALITY_COLOURS" in globals():
+        QUALITY_COLOURS.update({1:T.RED,2:"#ff9900",3:T.AMBER,4:T.GREEN,5:T.BLUE})
+
+def _font_scale_value(value):
+    try:
+        scale=float(value)
+    except (TypeError,ValueError):
+        scale=1.0
+    return min(1.5,max(1.0,scale))
+
+def accessible_label(widget,label):
+    """Give focusable controls a stable name for screen-reader tooling."""
+    name=str(label).strip()
+    widget._pillsleep_accessible_name=name
+    try:
+        widget.configure(takefocus=True)
+    except Exception:
+        pass
+    return widget
+
+def _font(*args,**kwargs):
+    size=kwargs.get("size")
+    if size is not None:
+        kwargs["size"]=max(8,round(float(size)*getattr(T,"FONT_SCALE",1.0)))
+    return ctk.CTkFont(*args,**kwargs)
+
+# ACCESSIBILITY FONT CALLS
+
 PILL_COLOURS = {
     "Blue":"#58a6ff","Green":"#3fb950","Red":"#f85149","Amber":"#d29922",
     "Purple":"#bc8cff","Teal":"#39d2c0","Pink":"#f778ba","Orange":"#f0883e",
@@ -204,6 +255,7 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
                     "compact_mode":False,"compact_w":360,"compact_h":430,
                     "always_on_top":True,"opacity":0.96,"active_page":"dashboard","follow_system_theme":True,
+                    "accessibility_high_contrast":False,"font_scale":1.0,
                     "reminders_enabled":True,"reminder_grace_minutes":30,
                     "reminder_snooze_minutes":15,"low_stock_lead_days":7,
                     "native_notifications":True,"active_profile_id":"default",
@@ -542,11 +594,11 @@ class ToastManager:
         t=ctk.CTkFrame(self.parent,fg_color=bg,corner_radius=8,border_width=1,border_color=fg)
         t.place(relx=0.5,rely=0.0,anchor="n",y=8); t.lift()
         ctk.CTkLabel(t,text=f"  {msg}  ",text_color=fg,
-                      font=ctk.CTkFont(size=12,weight="bold")).pack(padx=12,pady=(8,4))
+                      font=_font(size=12,weight="bold")).pack(padx=12,pady=(8,4))
         if actions:
             ar=ctk.CTkFrame(t,fg_color="transparent"); ar.pack(fill="x",padx=8,pady=(0,8))
             for label,callback in actions:
-                ctk.CTkButton(ar,text=label,height=25,font=ctk.CTkFont(size=10,weight="bold"),
+                ctk.CTkButton(ar,text=label,height=25,font=_font(size=10,weight="bold"),
                               fg_color=T.SURFACE,hover_color=T.HOVER,text_color=fg,
                               command=lambda cb=callback:self._run_action(t,cb)).pack(side="left",fill="x",expand=True,padx=2)
         self._active.append(t)
@@ -573,21 +625,23 @@ class VoiceLogDialog(ctk.CTkToplevel):
         self.title("Local voice log"); self.geometry("440x360"); self.configure(fg_color=T.BG); self.attributes("-topmost",True)
         self.protocol("WM_DELETE_WINDOW",self._close); self._build()
     def _build(self):
-        ctk.CTkLabel(self,text="Local voice log",font=ctk.CTkFont(size=18,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_LG,2))
+        ctk.CTkLabel(self,text="Local voice log",font=_font(size=18,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_LG,2))
         ctk.CTkLabel(self,text="Say:  ‘took my vitamin D’  — audio stays local and the temporary recording is deleted.",
-                     font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,wraplength=400,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(0,T.PAD_SM))
+                     font=_font(size=11),text_color=T.TEXT_SEC,wraplength=400,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(0,T.PAD_SM))
         self._status=ctk.CTkLabel(self,text="Ready" if HAS_VOICE else "Install faster-whisper, sounddevice, and soundfile to enable voice logging.",
-                                  font=ctk.CTkFont(size=11),text_color=T.GREEN if HAS_VOICE else T.AMBER,
+                                  font=_font(size=11),text_color=T.GREEN if HAS_VOICE else T.AMBER,
                                   wraplength=400,justify="left"); self._status.pack(anchor="w",padx=T.PAD_LG,pady=4)
         buttons=ctk.CTkFrame(self,fg_color="transparent"); buttons.pack(fill="x",padx=T.PAD_LG,pady=4)
         self._record=ctk.CTkButton(buttons,text="Record 8 seconds",height=34,fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,
                                    command=self._start_recording,state="normal" if HAS_VOICE else "disabled")
+        accessible_label(self._record,"Record an eight-second medication voice note")
         self._record.pack(side="left",fill="x",expand=True,padx=(0,4))
         self._file=ctk.CTkButton(buttons,text="Choose audio file",height=34,fg_color=T.SURFACE,hover_color=T.HOVER,
                                  text_color=T.BLUE,border_width=1,border_color=T.BORDER,command=self._choose_file,
                                  state="normal" if HAS_VOICE else "disabled")
+        accessible_label(self._file,"Choose a local audio file for medication voice logging")
         self._file.pack(side="left",fill="x",expand=True,padx=(4,0))
-        ctk.CTkLabel(self,text="Transcript",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_SM,2))
+        ctk.CTkLabel(self,text="Transcript",font=_font(size=12,weight="bold"),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_SM,2))
         self._transcript=ctk.CTkTextbox(self,height=90,fg_color=T.INPUT_BG,border_color=T.INPUT_BD,border_width=1)
         self._transcript.pack(fill="both",expand=True,padx=T.PAD_LG,pady=(0,T.PAD_LG))
     def _set_status(self,text,color=T.TEXT_SEC):
@@ -753,10 +807,10 @@ class StatCard(ctk.CTkFrame):
     def __init__(self, parent, title="", value="", sub="", accent=T.BLUE, **kw):
         super().__init__(parent,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER,**kw)
         f=ctk.CTkFrame(self,fg_color="transparent"); f.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_SM)
-        ctk.CTkLabel(f,text=title,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC).pack(anchor="w")
-        self._v=ctk.CTkLabel(f,text=value,font=ctk.CTkFont(size=22,weight="bold"),text_color=accent)
+        ctk.CTkLabel(f,text=title,font=_font(size=11),text_color=T.TEXT_SEC).pack(anchor="w")
+        self._v=ctk.CTkLabel(f,text=value,font=_font(size=22,weight="bold"),text_color=accent)
         self._v.pack(anchor="w",pady=(2,0))
-        self._s=ctk.CTkLabel(f,text=sub,font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED)
+        self._s=ctk.CTkLabel(f,text=sub,font=_font(size=10),text_color=T.TEXT_MUTED)
         self._s.pack(anchor="w")
     def update_values(self, v=None, s=None, a=None):
         if v is not None: self._v.configure(text=v)
@@ -767,7 +821,7 @@ class ChartFrame(ctk.CTkFrame):
     def __init__(self, parent, title="", height=200, **kw):
         super().__init__(parent,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER,**kw)
         if title:
-            ctk.CTkLabel(self,text=title,font=ctk.CTkFont(size=13,weight="bold"),
+            ctk.CTkLabel(self,text=title,font=_font(size=13,weight="bold"),
                           text_color=T.TEXT).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,0))
         self.fig=Figure(figsize=(5,height/100),dpi=100,facecolor=T.CHART_BG)
         self.fig.subplots_adjust(left=0.12,right=0.96,top=0.92,bottom=0.22)
@@ -796,15 +850,16 @@ class Sidebar(ctk.CTkFrame):
     def __init__(self, parent, on_nav, **kw):
         super().__init__(parent,width=62,fg_color=T.SIDEBAR,corner_radius=0,**kw)
         self.pack_propagate(False); self._nav=on_nav; self._btns={}
-        ctk.CTkLabel(self,text="PST",font=ctk.CTkFont(size=15,weight="bold"),
+        ctk.CTkLabel(self,text="PST",font=_font(size=15,weight="bold"),
                       text_color=T.BLUE).pack(pady=(14,16))
         for key,label in self.ITEMS:
-            b=ctk.CTkButton(self,text=label,width=56,height=44,font=ctk.CTkFont(size=10),
+            b=ctk.CTkButton(self,text=label,width=56,height=44,font=_font(size=10),
                              fg_color="transparent",hover_color=T.HOVER,text_color=T.TEXT_SEC,
                              anchor="center",corner_radius=6,command=lambda k=key:self._go(k))
+            accessible_label(b,f"Open {label} page")
             b.pack(pady=2,padx=3); self._btns[key]=b
         ctk.CTkFrame(self,fg_color="transparent",height=1).pack(fill="both",expand=True)
-        self._clk=ctk.CTkLabel(self,text="",font=ctk.CTkFont(size=9),text_color=T.TEXT_MUTED)
+        self._clk=ctk.CTkLabel(self,text="",font=_font(size=9),text_color=T.TEXT_MUTED)
         self._clk.pack(pady=(0,8)); self._tick()
     def _go(self,k): self.set_active(k); self._nav(k)
     def set_active(self,k):
@@ -828,9 +883,9 @@ class DashboardPage(ctk.CTkScrollableFrame):
     def _build(self):
         h=datetime.now().hour
         greet="Good morning" if h<12 else "Good afternoon" if h<18 else "Good evening"
-        ctk.CTkLabel(self,text=greet,font=ctk.CTkFont(size=20,weight="bold"),
+        ctk.CTkLabel(self,text=greet,font=_font(size=20,weight="bold"),
                       text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_MD,2))
-        ctk.CTkLabel(self,text=datetime.now().strftime("%A, %B %d, %Y"),font=ctk.CTkFont(size=12),
+        ctk.CTkLabel(self,text=datetime.now().strftime("%A, %B %d, %Y"),font=_font(size=12),
                       text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_LG,pady=(0,T.PAD_MD))
 
         # Stat cards
@@ -841,24 +896,26 @@ class DashboardPage(ctk.CTkScrollableFrame):
         self.c_str=StatCard(sr,"Pill Streak","--","",T.AMBER); self.c_str.grid(row=0,column=2,padx=3,pady=3,sticky="nsew")
 
         gh=ctk.CTkFrame(self,fg_color="transparent"); gh.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_SM,4))
-        ctk.CTkLabel(gh,text="Goal Cards",font=ctk.CTkFont(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
-        ctk.CTkButton(gh,text="Voice log",width=86,height=24,font=ctk.CTkFont(size=11),fg_color="transparent",
-                       hover_color=T.HOVER,text_color=T.BLUE,command=self._voice_log).pack(side="right")
+        ctk.CTkLabel(gh,text="Goal Cards",font=_font(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
+        voice_button=ctk.CTkButton(gh,text="Voice log",width=86,height=24,font=_font(size=11),fg_color="transparent",
+                                   hover_color=T.HOVER,text_color=T.BLUE,command=self._voice_log)
+        accessible_label(voice_button,"Open local voice medication log")
+        voice_button.pack(side="right")
         self._goals=ctk.CTkFrame(self,fg_color="transparent"); self._goals.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
         self._celebrated_goals=set()
 
         # Quick Take header
         qh=ctk.CTkFrame(self,fg_color="transparent"); qh.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_SM,4))
-        ctk.CTkLabel(qh,text="Quick Take",font=ctk.CTkFont(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
-        ctk.CTkButton(qh,text="Manage >",width=80,height=24,font=ctk.CTkFont(size=11),fg_color="transparent",
+        ctk.CTkLabel(qh,text="Quick Take",font=_font(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
+        ctk.CTkButton(qh,text="Manage >",width=80,height=24,font=_font(size=11),fg_color="transparent",
                        hover_color=T.HOVER,text_color=T.BLUE,command=lambda:self._nav("meds")).pack(side="right")
         self._qt=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER)
         self._qt.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
 
         # Sleep summary header
         sh=ctk.CTkFrame(self,fg_color="transparent"); sh.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_SM,4))
-        ctk.CTkLabel(sh,text="Sleep Overview",font=ctk.CTkFont(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
-        ctk.CTkButton(sh,text="Log Sleep >",width=90,height=24,font=ctk.CTkFont(size=11),fg_color="transparent",
+        ctk.CTkLabel(sh,text="Sleep Overview",font=_font(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
+        ctk.CTkButton(sh,text="Log Sleep >",width=90,height=24,font=_font(size=11),fg_color="transparent",
                        hover_color=T.HOVER,text_color=T.BLUE,command=lambda:self._nav("sleep")).pack(side="right")
         self._sc=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER)
         self._sc.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
@@ -878,12 +935,12 @@ class DashboardPage(ctk.CTkScrollableFrame):
             card=ctk.CTkFrame(grid,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,
                               border_color=accent if progress["complete"] else T.BORDER)
             card.grid(row=0,column=index,padx=3,pady=3,sticky="nsew")
-            ctk.CTkLabel(card,text=label,font=ctk.CTkFont(size=11,weight="bold"),text_color=T.TEXT,
+            ctk.CTkLabel(card,text=label,font=_font(size=11,weight="bold"),text_color=T.TEXT,
                          anchor="w",wraplength=150,justify="left").pack(anchor="w",padx=T.PAD_SM,pady=(T.PAD_SM,2))
             bar=ctk.CTkProgressBar(card,height=8,fg_color=T.BORDER,progress_color=accent)
             bar.set(progress["percent"] / 100); bar.pack(fill="x",padx=T.PAD_SM,pady=(2,2))
             status="Complete!  🎉" if progress["complete"] else f"{progress['current']}/{progress['target']} days"
-            ctk.CTkLabel(card,text=status,font=ctk.CTkFont(size=10,weight="bold" if progress["complete"] else "normal"),
+            ctk.CTkLabel(card,text=status,font=_font(size=10,weight="bold" if progress["complete"] else "normal"),
                          text_color=accent if progress["complete"] else T.TEXT_MUTED).pack(anchor="w",padx=T.PAD_SM,pady=(0,T.PAD_SM))
             if progress["complete"] and goal_id not in self._celebrated_goals:
                 self._celebrated_goals.add(goal_id); self.toast.show(f"Goal complete: {label}! 🎉","success")
@@ -913,7 +970,7 @@ class DashboardPage(ctk.CTkScrollableFrame):
         # Quick Take grid
         for w in self._qt.winfo_children(): w.destroy()
         if not meds:
-            ctk.CTkLabel(self._qt,text="No medications added yet.",font=ctk.CTkFont(size=12),
+            ctk.CTkLabel(self._qt,text="No medications added yet.",font=_font(size=12),
                           text_color=T.TEXT_MUTED).pack(pady=T.PAD_LG)
         else:
             g=ctk.CTkFrame(self._qt,fg_color="transparent"); g.pack(fill="x",padx=T.PAD_SM,pady=T.PAD_SM)
@@ -926,16 +983,16 @@ class DashboardPage(ctk.CTkScrollableFrame):
                 inn=ctk.CTkFrame(bf,fg_color="transparent"); inn.pack(fill="x",padx=T.PAD_SM,pady=T.PAD_SM)
                 nr=ctk.CTkFrame(inn,fg_color="transparent"); nr.pack(fill="x")
                 ctk.CTkFrame(nr,width=10,height=10,fg_color=color,corner_radius=5).pack(side="left",padx=(0,6),pady=2)
-                ctk.CTkLabel(nr,text=med["name"],font=ctk.CTkFont(size=12,weight="bold"),
+                ctk.CTkLabel(nr,text=med["name"],font=_font(size=12,weight="bold"),
                               text_color=T.TEXT if not done else T.GREEN,anchor="w").pack(side="left",fill="x",expand=True)
                 if med.get("dosage"):
-                    ctk.CTkLabel(inn,text=med["dosage"],font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED).pack(anchor="w")
+                    ctk.CTkLabel(inn,text=med["dosage"],font=_font(size=10),text_color=T.TEXT_MUTED).pack(anchor="w")
                 if done:
-                    ctk.CTkButton(inn,text="Taken  \u2713",height=26,font=ctk.CTkFont(size=11),
+                    ctk.CTkButton(inn,text="Taken  \u2713",height=26,font=_font(size=11),
                                    fg_color=T.GREEN,hover_color="#2ea043",text_color="#0d1117",
                                    command=lambda m=med:self._undo(m)).pack(fill="x",pady=(4,0))
                 else:
-                    ctk.CTkButton(inn,text="Take Now",height=26,font=ctk.CTkFont(size=11),
+                    ctk.CTkButton(inn,text="Take Now",height=26,font=_font(size=11),
                                    fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,
                                    command=lambda m=med:self._take(m)).pack(fill="x",pady=(4,0))
 
@@ -947,31 +1004,31 @@ class DashboardPage(ctk.CTkScrollableFrame):
             q=sleep.get("quality",3); sc=sleep.get("score","--")
             left=ctk.CTkFrame(row,fg_color="transparent"); left.pack(side="left",fill="x",expand=True)
             ctk.CTkLabel(left,text=f"{sleep.get('bedtime','--')}  \u2192  {sleep.get('waketime','--')}",
-                          font=ctk.CTkFont(size=13,weight="bold"),text_color=T.TEXT).pack(anchor="w")
-            ctk.CTkLabel(left,text=f"{dh}h {dm_}m  |  {QUALITY_LABELS.get(q,'')}",font=ctk.CTkFont(size=11),
+                          font=_font(size=13,weight="bold"),text_color=T.TEXT).pack(anchor="w")
+            ctk.CTkLabel(left,text=f"{dh}h {dm_}m  |  {QUALITY_LABELS.get(q,'')}",font=_font(size=11),
                           text_color=QUALITY_COLOURS.get(q,T.TEXT_SEC)).pack(anchor="w")
             fcts=sleep.get("factors",[])
-            if fcts: ctk.CTkLabel(left,text=", ".join(fcts),font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED).pack(anchor="w",pady=(2,0))
+            if fcts: ctk.CTkLabel(left,text=", ".join(fcts),font=_font(size=10),text_color=T.TEXT_MUTED).pack(anchor="w",pady=(2,0))
             sc_c=T.GREEN if sc!="--" and int(sc)>=70 else T.AMBER if sc!="--" and int(sc)>=50 else T.RED
             sf=ctk.CTkFrame(row,fg_color=T.SURFACE,corner_radius=8,width=60,height=50); sf.pack(side="right",padx=(T.PAD_SM,0)); sf.pack_propagate(False)
-            ctk.CTkLabel(sf,text=str(sc),font=ctk.CTkFont(size=18,weight="bold"),text_color=sc_c).pack(expand=True)
+            ctk.CTkLabel(sf,text=str(sc),font=_font(size=18,weight="bold"),text_color=sc_c).pack(expand=True)
             ss=self.dm.sleep_streak()
             ctk.CTkLabel(self._sc,text=f"Logged {ss} night{'s' if ss!=1 else ''} in a row",
-                          font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED).pack(padx=T.PAD_MD,pady=(0,T.PAD_SM))
+                          font=_font(size=10),text_color=T.TEXT_MUTED).pack(padx=T.PAD_MD,pady=(0,T.PAD_SM))
         else:
-            ctk.CTkLabel(self._sc,text="No sleep logged recently.",font=ctk.CTkFont(size=12),
+            ctk.CTkLabel(self._sc,text="No sleep logged recently.",font=_font(size=12),
                           text_color=T.TEXT_MUTED).pack(pady=T.PAD_LG)
 
         # Alerts
         for w in self._alerts.winfo_children(): w.destroy()
         low=[m for m in meds if m.get("supply") is not None and m["supply"]<=m.get("supply_warn",7)]
         if low:
-            ctk.CTkLabel(self._alerts,text="Low Stock Alerts",font=ctk.CTkFont(size=13,weight="bold"),
+            ctk.CTkLabel(self._alerts,text="Low Stock Alerts",font=_font(size=13,weight="bold"),
                           text_color=T.AMBER).pack(anchor="w",pady=(4,4))
             for m in low:
                 af=ctk.CTkFrame(self._alerts,fg_color="#2a2000",corner_radius=6,border_width=1,border_color=T.AMBER)
                 af.pack(fill="x",pady=2)
-                ctk.CTkLabel(af,text=f"  {m['name']}:  {m['supply']} remaining",font=ctk.CTkFont(size=11),
+                ctk.CTkLabel(af,text=f"  {m['name']}:  {m['supply']} remaining",font=_font(size=11),
                               text_color=T.AMBER).pack(padx=T.PAD_SM,pady=6,anchor="w")
 
     def _take(self,m): self.dm.log_taken(m["id"],m["name"]); self.toast.show(f"{m['name']} taken!","success"); self.refresh()
@@ -985,11 +1042,11 @@ class MedicationsPage(ctk.CTkScrollableFrame):
         self.dm=dm; self.toast=toast; self._dlg=None; self._build()
     def _build(self):
         hdr=ctk.CTkFrame(self,fg_color="transparent"); hdr.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
-        ctk.CTkLabel(hdr,text="Medications",font=ctk.CTkFont(size=20,weight="bold"),text_color=T.TEXT).pack(side="left")
-        ctk.CTkButton(hdr,text="Check interactions",height=30,width=128,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+        ctk.CTkLabel(hdr,text="Medications",font=_font(size=20,weight="bold"),text_color=T.TEXT).pack(side="left")
+        ctk.CTkButton(hdr,text="Check interactions",height=30,width=128,font=_font(size=11),fg_color=T.SURFACE,
                        hover_color=T.HOVER,text_color=T.AMBER,border_width=1,border_color=T.BORDER,
                        command=self._check_interactions).pack(side="right",padx=(4,0))
-        ctk.CTkButton(hdr,text="+ Add",height=32,width=80,font=ctk.CTkFont(size=12,weight="bold"),
+        ctk.CTkButton(hdr,text="+ Add",height=32,width=80,font=_font(size=12,weight="bold"),
                        fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,command=self._add).pack(side="right")
         self._lf=ctk.CTkFrame(self,fg_color="transparent"); self._lf.pack(fill="both",expand=True,padx=T.PAD_MD)
 
@@ -997,7 +1054,7 @@ class MedicationsPage(ctk.CTkScrollableFrame):
         for w in self._lf.winfo_children(): w.destroy()
         meds=self.dm.all_meds
         if not meds:
-            ctk.CTkLabel(self._lf,text="No medications yet.\nClick '+ Add' above.",font=ctk.CTkFont(size=13),
+            ctk.CTkLabel(self._lf,text="No medications yet.\nClick '+ Add' above.",font=_font(size=13),
                           text_color=T.TEXT_MUTED,justify="center").pack(pady=60); return
         for med in meds:
             done=self.dm.taken_today(med["id"]); active=med.get("active",True); color=med.get("color",T.BLUE)
@@ -1008,7 +1065,7 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             ctk.CTkFrame(row,width=8,height=40,fg_color=color,corner_radius=4).pack(side="left",padx=(0,T.PAD_SM))
             info=ctk.CTkFrame(row,fg_color="transparent"); info.pack(side="left",fill="x",expand=True)
             nt=med["name"]+("  (inactive)" if not active else "")
-            ctk.CTkLabel(info,text=nt,font=ctk.CTkFont(size=13,weight="bold"),
+            ctk.CTkLabel(info,text=nt,font=_font(size=13,weight="bold"),
                           text_color=T.GREEN if done else T.TEXT if active else T.TEXT_MUTED,anchor="w").pack(anchor="w")
             det=[]
             if med.get("dosage"): det.append(med["dosage"])
@@ -1016,25 +1073,25 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             if med.get("time_of_day"): det.append(med["time_of_day"])
             if med.get("schedule_times"): det.append(" / ".join(med["schedule_times"]))
             if med.get("clinician"): det.append(f"Prescriber: {med['clinician']}")
-            if det: ctk.CTkLabel(info,text="  |  ".join(det),font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,anchor="w").pack(anchor="w")
+            if det: ctk.CTkLabel(info,text="  |  ".join(det),font=_font(size=11),text_color=T.TEXT_SEC,anchor="w").pack(anchor="w")
             if med.get("supply") is not None:
                 s=med["supply"]; w_=med.get("supply_warn",7)
                 sc=T.RED if s<=w_ else T.AMBER if s<=w_*2 else T.TEXT_SEC
-                ctk.CTkLabel(info,text=f"Supply: {s}",font=ctk.CTkFont(size=10),text_color=sc).pack(anchor="w")
+                ctk.CTkLabel(info,text=f"Supply: {s}",font=_font(size=10),text_color=sc).pack(anchor="w")
             btns=ctk.CTkFrame(row,fg_color="transparent"); btns.pack(side="right")
             if active:
                 if done:
-                    ctk.CTkButton(btns,text="Undo",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+                    ctk.CTkButton(btns,text="Undo",width=55,height=28,font=_font(size=11),fg_color=T.SURFACE,
                                    hover_color=T.HOVER,text_color=T.TEXT_SEC,command=lambda m=med:self._undo(m)).pack(pady=1)
                 else:
-                    ctk.CTkButton(btns,text="Take",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.BTN_PRI,
+                    ctk.CTkButton(btns,text="Take",width=55,height=28,font=_font(size=11),fg_color=T.BTN_PRI,
                                    hover_color=T.BTN_PRI_H,command=lambda m=med:self._take(m)).pack(pady=1)
-            ctk.CTkButton(btns,text="Edit",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+            ctk.CTkButton(btns,text="Edit",width=55,height=28,font=_font(size=11),fg_color=T.SURFACE,
                             hover_color=T.HOVER,text_color=T.BLUE,command=lambda m=med:self._edit(m)).pack(pady=1)
-            ctk.CTkButton(btns,text="Refill",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+            ctk.CTkButton(btns,text="Refill",width=55,height=28,font=_font(size=11),fg_color=T.SURFACE,
                            hover_color=T.HOVER,text_color=T.TEAL,command=lambda m=med:self._refill(m)).pack(pady=1)
             if med.get("refill_history") or med.get("dose_changes") or med.get("photo_path"):
-                ctk.CTkButton(btns,text="History",width=55,height=28,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+                ctk.CTkButton(btns,text="History",width=55,height=28,font=_font(size=11),fg_color=T.SURFACE,
                                hover_color=T.HOVER,text_color=T.TEXT_SEC,command=lambda m=med:self._history(m)).pack(pady=1)
 
     def _take(self,m): self.dm.log_taken(m["id"],m["name"]); self.toast.show(f"{m['name']} taken!","success"); self.refresh()
@@ -1073,7 +1130,7 @@ class MedicationsPage(ctk.CTkScrollableFrame):
         dlg.configure(fg_color=T.BG); dlg.attributes("-topmost",True); dlg.resizable(False,True); dlg.grab_set()
         sc=ctk.CTkScrollableFrame(dlg,fg_color=T.BG); sc.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
         def _f(lbl,ph="",dv=""):
-            ctk.CTkLabel(sc,text=lbl,font=ctk.CTkFont(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
+            ctk.CTkLabel(sc,text=lbl,font=_font(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
             e=ctk.CTkEntry(sc,placeholder_text=ph,fg_color=T.INPUT_BG,border_color=T.INPUT_BD); e.pack(fill="x",pady=(0,4))
             if dv: e.insert(0,dv)
             return e
@@ -1081,14 +1138,14 @@ class MedicationsPage(ctk.CTkScrollableFrame):
         de=_f("Dosage","e.g. 1000 IU",med.get("dosage","") if ie else "")
         ce=_f("Prescribing Clinician","Optional",med.get("clinician","") if ie else "")
         dnote=_f("Dose Change Note","Only used when editing dosage","")
-        ctk.CTkLabel(sc,text="Frequency",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
+        ctk.CTkLabel(sc,text="Frequency",font=_font(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
         fv=ctk.StringVar(value=med.get("frequency","Daily") if ie else "Daily")
         ctk.CTkOptionMenu(sc,variable=fv,values=["Daily","Twice Daily","3x Daily","Every Other Day","Weekly","As Needed"],
                            fg_color=T.INPUT_BG,button_color=T.BORDER,button_hover_color=T.HOVER,dropdown_fg_color=T.SURFACE).pack(fill="x",pady=(0,4))
         te=_f("Time of Day","e.g. Morning",med.get("time_of_day","") if ie else "")
         schedule_value=",".join(med.get("schedule_times",[])) if ie and med.get("schedule_times") else ""
         ste=_f("Schedule Times","HH:MM, HH:MM (blank uses frequency defaults)",schedule_value)
-        ctk.CTkLabel(sc,text="Colour",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
+        ctk.CTkLabel(sc,text="Colour",font=_font(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
         cv=ctk.StringVar(value="Blue")
         if ie:
             for cn,ch in PILL_COLOURS.items():
@@ -1103,12 +1160,12 @@ class MedicationsPage(ctk.CTkScrollableFrame):
         pe=_f("Reference Photo","For travel identification; no automatic identification",med.get("photo_path","") if ie else "")
         ctk.CTkButton(sc,text="Browse photo…",height=28,fg_color=T.SURFACE,hover_color=T.HOVER,text_color=T.TEAL,
                       command=lambda:self._browse_photo(pe)).pack(anchor="w",pady=(0,4))
-        ctk.CTkLabel(sc,text="Notes",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
+        ctk.CTkLabel(sc,text="Notes",font=_font(size=12,weight="bold"),text_color=T.BLUE).pack(anchor="w",pady=(T.PAD_SM,2))
         ntb=ctk.CTkTextbox(sc,height=50,fg_color=T.INPUT_BG,border_color=T.INPUT_BD,border_width=1); ntb.pack(fill="x",pady=(0,4))
         if ie and med.get("notes"): ntb.insert("1.0",med["notes"])
         if ie:
             av=ctk.BooleanVar(value=med.get("active",True))
-            ctk.CTkSwitch(sc,text="Active",variable=av,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+            ctk.CTkSwitch(sc,text="Active",variable=av,font=_font(size=12),text_color=T.TEXT_SEC,
                            fg_color=T.BORDER,progress_color=T.GREEN,button_color=T.TEXT,button_hover_color=T.BLUE).pack(anchor="w",pady=T.PAD_SM)
         br=ctk.CTkFrame(sc,fg_color="transparent"); br.pack(fill="x",pady=(T.PAD_MD,T.PAD_SM))
         def _save():
@@ -1132,13 +1189,13 @@ class MedicationsPage(ctk.CTkScrollableFrame):
             else: self.dm.add_med(d); self.toast.show(f"{n} added!","success")
             dlg.destroy(); self.refresh()
         ctk.CTkButton(br,text="Save",fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,height=34,
-                       font=ctk.CTkFont(size=13,weight="bold"),command=_save).pack(side="left",fill="x",expand=True,padx=(0,4))
+                       font=_font(size=13,weight="bold"),command=_save).pack(side="left",fill="x",expand=True,padx=(0,4))
         if ie:
             def _del():
                 if messagebox.askyesno("Delete",f"Delete '{med['name']}'?",parent=dlg):
                     self.dm.delete_med(med["id"]); self.toast.show(f"Deleted","warning"); dlg.destroy(); self.refresh()
             ctk.CTkButton(br,text="Delete",fg_color=T.BTN_DNG,hover_color=T.BTN_DNG_H,height=34,
-                           font=ctk.CTkFont(size=13,weight="bold"),command=_del).pack(side="left",fill="x",expand=True,padx=(4,4))
+                           font=_font(size=13,weight="bold"),command=_del).pack(side="left",fill="x",expand=True,padx=(4,4))
         ctk.CTkButton(br,text="Cancel",fg_color=T.SURFACE,hover_color=T.HOVER,height=34,text_color=T.TEXT_SEC,
                        command=dlg.destroy).pack(side="right",fill="x",expand=True,padx=(4,0))
     def _browse_photo(self, entry):
@@ -1154,31 +1211,31 @@ class SleepPage(ctk.CTkScrollableFrame):
         self.dm=dm; self.toast=toast; self._build()
     def _build(self):
         hdr=ctk.CTkFrame(self,fg_color="transparent"); hdr.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
-        ctk.CTkLabel(hdr,text="Sleep Tracker",font=ctk.CTkFont(size=20,weight="bold"),text_color=T.TEXT).pack(side="left")
-        ctk.CTkButton(hdr,text="Import CSV",width=96,height=30,font=ctk.CTkFont(size=11),fg_color=T.SURFACE,
+        ctk.CTkLabel(hdr,text="Sleep Tracker",font=_font(size=20,weight="bold"),text_color=T.TEXT).pack(side="left")
+        ctk.CTkButton(hdr,text="Import CSV",width=96,height=30,font=_font(size=11),fg_color=T.SURFACE,
                        hover_color=T.HOVER,text_color=T.BLUE,border_width=1,border_color=T.BORDER,
                        command=self._import_csv).pack(side="right")
         self._coach=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER)
         self._coach.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
         # Quick presets
         pf=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER); pf.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
-        ctk.CTkLabel(pf,text="Quick Log (ending now)",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,4))
+        ctk.CTkLabel(pf,text="Quick Log (ending now)",font=_font(size=12,weight="bold"),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,4))
         pr=ctk.CTkFrame(pf,fg_color="transparent"); pr.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
         for h in [5,6,7,8,9]:
-            ctk.CTkButton(pr,text=f"{h}h",width=50,height=32,font=ctk.CTkFont(size=12,weight="bold"),
+            ctk.CTkButton(pr,text=f"{h}h",width=50,height=32,font=_font(size=12,weight="bold"),
                            fg_color=T.SURFACE,hover_color=T.HOVER,text_color=T.PURPLE,border_width=1,border_color=T.BORDER,
                            command=lambda hrs=h:self._quick(hrs)).pack(side="left",padx=2,expand=True,fill="x")
         nr=ctk.CTkFrame(pf,fg_color="transparent"); nr.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
-        ctk.CTkLabel(nr,text="Nap",font=ctk.CTkFont(size=11,weight="bold"),text_color=T.TEXT_SEC).pack(side="left",padx=(0,6))
+        ctk.CTkLabel(nr,text="Nap",font=_font(size=11,weight="bold"),text_color=T.TEXT_SEC).pack(side="left",padx=(0,6))
         for minutes in (20,30,60):
-            ctk.CTkButton(nr,text=f"{minutes}m",width=58,height=26,font=ctk.CTkFont(size=10),fg_color=T.SURFACE,
+            ctk.CTkButton(nr,text=f"{minutes}m",width=58,height=26,font=_font(size=10),fg_color=T.SURFACE,
                           hover_color=T.HOVER,text_color=T.TEAL,command=lambda mins=minutes:self._quick_nap(mins)).pack(side="left",padx=2)
         # Manual form
         fm=ctk.CTkFrame(self,fg_color=T.CARD,corner_radius=T.RAD,border_width=1,border_color=T.BORDER); fm.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
-        ctk.CTkLabel(fm,text="Manual Entry",font=ctk.CTkFont(size=13,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,4))
+        ctk.CTkLabel(fm,text="Manual Entry",font=_font(size=13,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,4))
         def _tr(lbl):
             r=ctk.CTkFrame(fm,fg_color="transparent"); r.pack(fill="x",padx=T.PAD_MD,pady=2)
-            ctk.CTkLabel(r,text=lbl,width=70,anchor="w",font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC).pack(side="left")
+            ctk.CTkLabel(r,text=lbl,width=70,anchor="w",font=_font(size=12),text_color=T.TEXT_SEC).pack(side="left")
             return r
         dr=_tr("Date:")
         self.date_e=ctk.CTkEntry(dr,width=120,fg_color=T.INPUT_BG,border_color=T.INPUT_BD); self.date_e.pack(side="left"); self.date_e.insert(0,datetime.now().strftime("%Y-%m-%d"))
@@ -1191,40 +1248,40 @@ class SleepPage(ctk.CTkScrollableFrame):
         ctk.CTkLabel(wr,text=":",text_color=T.TEXT_MUTED).pack(side="left")
         self.wm=ctk.CTkOptionMenu(wr,values=[f"{m:02d}" for m in range(0,60,5)],width=60,fg_color=T.INPUT_BG,button_color=T.BORDER,dropdown_fg_color=T.SURFACE); self.wm.set("00"); self.wm.pack(side="left",padx=2)
         self.napv=ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(fm,text="This is a nap",variable=self.napv,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,
+        ctk.CTkSwitch(fm,text="This is a nap",variable=self.napv,font=_font(size=11),text_color=T.TEXT_SEC,
                       fg_color=T.BORDER,progress_color=T.TEAL,button_color=T.TEXT,button_hover_color=T.BLUE).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,0))
         # Quality
         qr=_tr("Quality:"); self.qv=tk.IntVar(value=4)
-        self._ql=ctk.CTkLabel(qr,text="Good",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.GREEN,width=70); self._ql.pack(side="right")
+        self._ql=ctk.CTkLabel(qr,text="Good",font=_font(size=12,weight="bold"),text_color=T.GREEN,width=70); self._ql.pack(side="right")
         self.qs=ctk.CTkSlider(qr,from_=1,to=5,number_of_steps=4,fg_color=T.BORDER,progress_color=T.PURPLE,
                                button_color=T.TEXT,button_hover_color=T.BLUE,command=self._qc); self.qs.set(4); self.qs.pack(side="left",fill="x",expand=True,padx=T.PAD_SM)
         # Optional wellbeing signals: they gently tune the score when supplied.
         mr=_tr("Mood:"); self.moodv=tk.IntVar(value=3)
-        self._moodl=ctk.CTkLabel(mr,text="Medium (3/5)",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEAL,width=90); self._moodl.pack(side="right")
+        self._moodl=ctk.CTkLabel(mr,text="Medium (3/5)",font=_font(size=12,weight="bold"),text_color=T.TEAL,width=90); self._moodl.pack(side="right")
         self.moods=ctk.CTkSlider(mr,from_=1,to=5,number_of_steps=4,fg_color=T.BORDER,progress_color=T.TEAL,
                                  button_color=T.TEXT,button_hover_color=T.BLUE,command=self._mood_changed)
         self.moods.set(3); self.moods.pack(side="left",fill="x",expand=True,padx=T.PAD_SM)
         er=_tr("Energy:"); self.energyv=tk.IntVar(value=3)
-        self._energyl=ctk.CTkLabel(er,text="Medium (3/5)",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.AMBER,width=90); self._energyl.pack(side="right")
+        self._energyl=ctk.CTkLabel(er,text="Medium (3/5)",font=_font(size=12,weight="bold"),text_color=T.AMBER,width=90); self._energyl.pack(side="right")
         self.energy=ctk.CTkSlider(er,from_=1,to=5,number_of_steps=4,fg_color=T.BORDER,progress_color=T.AMBER,
                                   button_color=T.TEXT,button_hover_color=T.BLUE,command=self._energy_changed)
         self.energy.set(3); self.energy.pack(side="left",fill="x",expand=True,padx=T.PAD_SM)
         # Factors
-        ctk.CTkLabel(fm,text="Factors:",font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,2))
+        ctk.CTkLabel(fm,text="Factors:",font=_font(size=12),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,2))
         fg=ctk.CTkFrame(fm,fg_color="transparent"); fg.pack(fill="x",padx=T.PAD_MD,pady=(0,4))
         self._fvars={}
         for i,f in enumerate(SLEEP_FACTORS):
             v=ctk.BooleanVar(value=False); self._fvars[f]=v
-            ctk.CTkCheckBox(fg,text=f,variable=v,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,
+            ctk.CTkCheckBox(fg,text=f,variable=v,font=_font(size=11),text_color=T.TEXT_SEC,
                              fg_color=T.BORDER,hover_color=T.HOVER,checkmark_color=T.PURPLE,border_color=T.BORDER).grid(row=i//2,column=i%2,padx=4,pady=2,sticky="w")
             fg.columnconfigure(i%2,weight=1)
         # Notes
-        ctk.CTkLabel(fm,text="Notes:",font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,2))
+        ctk.CTkLabel(fm,text="Notes:",font=_font(size=12),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_MD,pady=(T.PAD_SM,2))
         self.ntb=ctk.CTkTextbox(fm,height=50,fg_color=T.INPUT_BG,border_color=T.INPUT_BD,border_width=1); self.ntb.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
-        ctk.CTkButton(fm,text="Log Sleep",height=38,font=ctk.CTkFont(size=14,weight="bold"),
+        ctk.CTkButton(fm,text="Log Sleep",height=38,font=_font(size=14,weight="bold"),
                        fg_color=T.PURPLE,hover_color="#9a6aff",command=self._log).pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_MD))
         # History
-        ctk.CTkLabel(self,text="Recent Entries",font=ctk.CTkFont(size=14,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_SM,4))
+        ctk.CTkLabel(self,text="Recent Entries",font=_font(size=14,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_SM,4))
         self._hf=ctk.CTkFrame(self,fg_color="transparent"); self._hf.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_MD))
 
     def _qc(self,val):
@@ -1274,15 +1331,15 @@ class SleepPage(ctk.CTkScrollableFrame):
         coach=bedtime_consistency_coach(self.dm.sleep_entries)
         row=ctk.CTkFrame(self._coach,fg_color="transparent"); row.pack(fill="x",padx=T.PAD_MD,pady=T.PAD_SM)
         left=ctk.CTkFrame(row,fg_color="transparent"); left.pack(side="left",fill="x",expand=True)
-        ctk.CTkLabel(left,text="Bedtime coach",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEAL).pack(anchor="w")
-        ctk.CTkLabel(left,text=coach["recommendation"],font=ctk.CTkFont(size=10),text_color=T.TEXT_SEC,wraplength=360,justify="left").pack(anchor="w",pady=(2,0))
+        ctk.CTkLabel(left,text="Bedtime coach",font=_font(size=12,weight="bold"),text_color=T.TEAL).pack(anchor="w")
+        ctk.CTkLabel(left,text=coach["recommendation"],font=_font(size=10),text_color=T.TEXT_SEC,wraplength=360,justify="left").pack(anchor="w",pady=(2,0))
         if coach.get("target_bedtime"):
-            ctk.CTkLabel(row,text=coach["target_bedtime"],font=ctk.CTkFont(size=18,weight="bold"),text_color=T.TEAL).pack(side="right")
+            ctk.CTkLabel(row,text=coach["target_bedtime"],font=_font(size=18,weight="bold"),text_color=T.TEAL).pack(side="right")
     def refresh(self):
         self._refresh_coach()
         for w in self._hf.winfo_children(): w.destroy()
         entries=sorted(self.dm.sleep_entries,key=lambda s:s["date"],reverse=True)[:10]
-        if not entries: ctk.CTkLabel(self._hf,text="No entries yet.",font=ctk.CTkFont(size=12),text_color=T.TEXT_MUTED).pack(pady=T.PAD_LG); return
+        if not entries: ctk.CTkLabel(self._hf,text="No entries yet.",font=_font(size=12),text_color=T.TEXT_MUTED).pack(pady=T.PAD_LG); return
         for s in entries:
             q=s.get("quality",3); dh,dm_=s.get("duration_min",0)//60,s.get("duration_min",0)%60; sc=s.get("score","--")
             if sc is None: sc="--"
@@ -1290,16 +1347,16 @@ class SleepPage(ctk.CTkScrollableFrame):
             inn=ctk.CTkFrame(row,fg_color="transparent"); inn.pack(fill="x",padx=T.PAD_MD,pady=T.PAD_SM)
             kind="Nap  " if s.get("is_nap") else ""
             source=f"  · {s.get('source').title()}" if s.get("source") else ""
-            ctk.CTkLabel(inn,text=f"{kind}{s['date']}{source}",width=135,font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED).pack(side="left")
-            ctk.CTkLabel(inn,text=f"{dh}h {dm_}m",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT).pack(side="left",padx=T.PAD_SM)
-            ctk.CTkLabel(inn,text=QUALITY_LABELS.get(q,""),font=ctk.CTkFont(size=11),text_color=QUALITY_COLOURS.get(q,T.TEXT_SEC)).pack(side="left")
+            ctk.CTkLabel(inn,text=f"{kind}{s['date']}{source}",width=135,font=_font(size=11),text_color=T.TEXT_MUTED).pack(side="left")
+            ctk.CTkLabel(inn,text=f"{dh}h {dm_}m",font=_font(size=12,weight="bold"),text_color=T.TEXT).pack(side="left",padx=T.PAD_SM)
+            ctk.CTkLabel(inn,text=QUALITY_LABELS.get(q,""),font=_font(size=11),text_color=QUALITY_COLOURS.get(q,T.TEXT_SEC)).pack(side="left")
             wellbeing="  |  ".join(f"{label} {s[key]}/5" for label,key in (("Mood","mood"),("Energy","energy")) if s.get(key) is not None)
-            if wellbeing: ctk.CTkLabel(inn,text=wellbeing,font=ctk.CTkFont(size=9),text_color=T.TEAL).pack(side="left",padx=4)
+            if wellbeing: ctk.CTkLabel(inn,text=wellbeing,font=_font(size=9),text_color=T.TEAL).pack(side="left",padx=4)
             if s.get("stages"):
                 stage_text="  ".join(f"{key.title()} {value}m" for key,value in s["stages"].items())
-                ctk.CTkLabel(inn,text=stage_text,font=ctk.CTkFont(size=9),text_color=T.TEAL).pack(side="left",padx=4)
+                ctk.CTkLabel(inn,text=stage_text,font=_font(size=9),text_color=T.TEAL).pack(side="left",padx=4)
             sc_c=T.GREEN if sc!="--" and sc>=70 else T.AMBER if sc!="--" and sc>=50 else T.RED
-            ctk.CTkLabel(inn,text=f"  {sc}",font=ctk.CTkFont(size=12,weight="bold"),text_color=sc_c).pack(side="right")
+            ctk.CTkLabel(inn,text=f"  {sc}",font=_font(size=12,weight="bold"),text_color=sc_c).pack(side="right")
         self.date_e.delete(0,"end"); self.date_e.insert(0,datetime.now().strftime("%Y-%m-%d"))
 
 # ── 7D : ANALYTICS ───────────────────────────────────────────────────────────
@@ -1309,7 +1366,7 @@ class AnalyticsPage(ctk.CTkScrollableFrame):
                          scrollbar_button_hover_color=T.TEXT_MUTED,**kw)
         self.dm=dm; self._build()
     def _build(self):
-        ctk.CTkLabel(self,text="Analytics",font=ctk.CTkFont(size=20,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
+        ctk.CTkLabel(self,text="Analytics",font=_font(size=20,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
         sr=ctk.CTkFrame(self,fg_color="transparent"); sr.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM)); sr.columnconfigure((0,1,2,3),weight=1,uniform="s")
         self.sa=StatCard(sr,"Avg Sleep","--","",T.PURPLE); self.sa.grid(row=0,column=0,padx=3,pady=3,sticky="nsew")
         self.sq=StatCard(sr,"Avg Quality","--","",T.TEAL); self.sq.grid(row=0,column=1,padx=3,pady=3,sticky="nsew")
@@ -1318,7 +1375,7 @@ class AnalyticsPage(ctk.CTkScrollableFrame):
         rr=ctk.CTkFrame(self,fg_color="transparent"); rr.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_SM,4))
         self._rv=ctk.StringVar(value="14")
         for v,l in [("7","7 days"),("14","14 days"),("30","30 days")]:
-            ctk.CTkRadioButton(rr,text=l,variable=self._rv,value=v,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,
+            ctk.CTkRadioButton(rr,text=l,variable=self._rv,value=v,font=_font(size=11),text_color=T.TEXT_SEC,
                                 fg_color=T.BLUE,hover_color=T.HOVER,border_color=T.BORDER,command=self.refresh).pack(side="left",padx=T.PAD_SM)
         self.ch_adh=ChartFrame(self,title="Medication Adherence (%)",height=180); self.ch_adh.pack(fill="x",padx=T.PAD_MD,pady=T.PAD_SM)
         self.ch_dur=ChartFrame(self,title="Sleep Duration (hours)",height=180); self.ch_dur.pack(fill="x",padx=T.PAD_MD,pady=T.PAD_SM)
@@ -1406,53 +1463,70 @@ class SettingsPage(ctk.CTkScrollableFrame):
         self.dm=dm; self.app=app_ref; self._build()
     def _sect(self,t,c=T.BLUE):
         ctk.CTkFrame(self,height=1,fg_color=T.DIVIDER).pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
-        ctk.CTkLabel(self,text=t,font=ctk.CTkFont(size=14,weight="bold"),text_color=c).pack(anchor="w",padx=T.PAD_LG,pady=(0,T.PAD_SM))
+        ctk.CTkLabel(self,text=t,font=_font(size=14,weight="bold"),text_color=c).pack(anchor="w",padx=T.PAD_LG,pady=(0,T.PAD_SM))
     def _build(self):
-        ctk.CTkLabel(self,text="Settings",font=ctk.CTkFont(size=20,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
+        ctk.CTkLabel(self,text="Settings",font=_font(size=20,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_MD,T.PAD_SM))
         self._sect("Appearance")
         or_=ctk.CTkFrame(self,fg_color="transparent"); or_.pack(fill="x",padx=T.PAD_LG,pady=4)
-        ctk.CTkLabel(or_,text="Opacity",font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC).pack(side="left")
-        self._ol=ctk.CTkLabel(or_,text=f"{int(self.dm.settings['opacity']*100)}%",font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED); self._ol.pack(side="right")
+        ctk.CTkLabel(or_,text="Opacity",font=_font(size=12),text_color=T.TEXT_SEC).pack(side="left")
+        self._ol=ctk.CTkLabel(or_,text=f"{int(self.dm.settings['opacity']*100)}%",font=_font(size=11),text_color=T.TEXT_MUTED); self._ol.pack(side="right")
         ctk.CTkSlider(self,from_=0.3,to=1.0,number_of_steps=14,fg_color=T.BORDER,progress_color=T.BLUE,
                        button_color=T.TEXT,button_hover_color=T.BLUE,command=self._so).set(self.dm.settings["opacity"])
         self.children[list(self.children.keys())[-1]].pack(fill="x",padx=T.PAD_LG,pady=(0,T.PAD_SM))
         self._av=ctk.BooleanVar(value=self.dm.settings["always_on_top"])
-        ctk.CTkSwitch(self,text="Always on Top",variable=self._av,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+        ctk.CTkSwitch(self,text="Always on Top",variable=self._av,font=_font(size=12),text_color=T.TEXT_SEC,
                        fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
                        command=self._ta).pack(anchor="w",padx=T.PAD_LG,pady=4)
         self._cm=ctk.BooleanVar(value=self.dm.settings.get("compact_mode",False))
-        ctk.CTkSwitch(self,text="Compact today mode",variable=self._cm,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+        ctk.CTkSwitch(self,text="Compact today mode",variable=self._cm,font=_font(size=12),text_color=T.TEXT_SEC,
                        fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
                        command=self._tc).pack(anchor="w",padx=T.PAD_LG,pady=4)
         ctk.CTkLabel(self,text="Shows the Dashboard only in a smaller widget. Use the title-bar button to expand.",
-                     font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
+                     font=_font(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
                          anchor="w",padx=T.PAD_LG,pady=(0,4))
         self._tv=ctk.BooleanVar(value=self.dm.settings.get("follow_system_theme",True))
-        ctk.CTkSwitch(self,text="Follow Windows theme and accent",variable=self._tv,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+        ctk.CTkSwitch(self,text="Follow Windows theme and accent",variable=self._tv,font=_font(size=12),text_color=T.TEXT_SEC,
                        fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
                        command=self._tt).pack(anchor="w",padx=T.PAD_LG,pady=4)
         ctk.CTkLabel(self,text="Theme preference and Windows accent are applied when PillSleepTracker starts. Restart after changing this switch.",
-                     font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
+                     font=_font(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
+                         anchor="w",padx=T.PAD_LG,pady=(0,4))
+        self._hc=ctk.BooleanVar(value=self.dm.settings.get("accessibility_high_contrast",False))
+        high_contrast=ctk.CTkSwitch(self,text="High contrast mode",variable=self._hc,font=_font(size=12),text_color=T.TEXT_SEC,
+                                    fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
+                                    command=self._save_accessibility)
+        accessible_label(high_contrast,"Toggle high contrast mode")
+        high_contrast.pack(anchor="w",padx=T.PAD_LG,pady=4)
+        scale_row=ctk.CTkFrame(self,fg_color="transparent"); scale_row.pack(fill="x",padx=T.PAD_LG,pady=2)
+        ctk.CTkLabel(scale_row,text="Font scale",font=_font(size=11),text_color=T.TEXT_SEC).pack(side="left")
+        self._font_scale_menu=ctk.CTkOptionMenu(scale_row,values=["100%","115%","130%","150%"],width=100,
+                                                fg_color=T.INPUT_BG,button_color=T.BORDER,dropdown_fg_color=T.SURFACE,
+                                                command=self._set_font_scale)
+        self._font_scale_menu.set(f"{round(_font_scale_value(self.dm.settings.get('font_scale',1.0))*100)}%")
+        accessible_label(self._font_scale_menu,"Choose application font scale")
+        self._font_scale_menu.pack(side="right")
+        ctk.CTkLabel(self,text="High contrast and font scale are applied when PillSleepTracker starts. Restart after changing either option.",
+                     font=_font(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(
                          anchor="w",padx=T.PAD_LG,pady=(0,4))
         self._sect("Reminders")
         self._rv=ctk.BooleanVar(value=self.dm.settings.get("reminders_enabled",True))
-        ctk.CTkSwitch(self,text="Dose reminders",variable=self._rv,font=ctk.CTkFont(size=12),text_color=T.TEXT_SEC,
+        ctk.CTkSwitch(self,text="Dose reminders",variable=self._rv,font=_font(size=12),text_color=T.TEXT_SEC,
                        fg_color=T.BORDER,progress_color=T.BLUE,button_color=T.TEXT,button_hover_color=T.BLUE,
                        command=self._tr).pack(anchor="w",padx=T.PAD_LG,pady=4)
         for label,key,values in [("Grace window","reminder_grace_minutes",["15","30","60","120"]),
                                  ("Snooze for","reminder_snooze_minutes",["5","15","30","60"]),
                                  ("Reorder lead time","low_stock_lead_days",["3","7","14","30"])]:
             rr=ctk.CTkFrame(self,fg_color="transparent"); rr.pack(fill="x",padx=T.PAD_LG,pady=2)
-            ctk.CTkLabel(rr,text=label,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC).pack(side="left")
+            ctk.CTkLabel(rr,text=label,font=_font(size=11),text_color=T.TEXT_SEC).pack(side="left")
             ctk.CTkOptionMenu(rr,values=values,width=96,fg_color=T.INPUT_BG,button_color=T.BORDER,
                               dropdown_fg_color=T.SURFACE,command=lambda v,k=key:self._rs(k,v)).set(str(self.dm.settings.get(key,values[0])))
             menu=rr.winfo_children()[-1]; menu.pack(side="right")
         self._sect("Weekly email",T.PURPLE)
         ctk.CTkLabel(self,text="Send a plain-text seven-day summary through a local or configured SMTP server. The password is requested per send and never saved.",
-                     font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
+                     font=_font(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
         def _mail_field(label,key,width=260):
             row=ctk.CTkFrame(self,fg_color="transparent"); row.pack(fill="x",padx=T.PAD_LG,pady=2)
-            ctk.CTkLabel(row,text=label,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC).pack(side="left")
+            ctk.CTkLabel(row,text=label,font=_font(size=11),text_color=T.TEXT_SEC).pack(side="left")
             entry=ctk.CTkEntry(row,width=width,fg_color=T.INPUT_BG,border_color=T.INPUT_BD)
             entry.insert(0,str(self.dm.settings.get(key,""))); entry.pack(side="right")
             return entry
@@ -1461,44 +1535,44 @@ class SettingsPage(ctk.CTkScrollableFrame):
         self._smtp_sender=_mail_field("Username / sender","smtp_sender")
         self._email_recipient=_mail_field("Recipient","weekly_email_recipient")
         self._tlsv=ctk.BooleanVar(value=self.dm.settings.get("smtp_starttls",False))
-        ctk.CTkSwitch(self,text="Use STARTTLS",variable=self._tlsv,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,
+        ctk.CTkSwitch(self,text="Use STARTTLS",variable=self._tlsv,font=_font(size=11),text_color=T.TEXT_SEC,
                       fg_color=T.BORDER,progress_color=T.PURPLE,button_color=T.TEXT,button_hover_color=T.BLUE,
                       command=self._save_email_settings).pack(anchor="w",padx=T.PAD_LG,pady=4)
-        ctk.CTkButton(self,text="Send 7-day summary",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        ctk.CTkButton(self,text="Send 7-day summary",height=34,font=_font(size=12),fg_color=T.SURFACE,
                       hover_color=T.HOVER,text_color=T.PURPLE,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._send_weekly_email).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("Sleep personalization")
         chronotype=self.dm.settings.get("chronotype","Not set")
-        self._ct_label=ctk.CTkLabel(self,text=f"Chronotype: {chronotype}",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC)
+        self._ct_label=ctk.CTkLabel(self,text=f"Chronotype: {chronotype}",font=_font(size=11),text_color=T.TEXT_SEC)
         self._ct_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
-        ctk.CTkButton(self,text="Take 5-question MEQ quiz",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        ctk.CTkButton(self,text="Take 5-question MEQ quiz",height=34,font=_font(size=12),fg_color=T.SURFACE,
                       hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._quiz).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("Profiles")
-        self._profile_label=ctk.CTkLabel(self,text="",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC)
+        self._profile_label=ctk.CTkLabel(self,text="",font=_font(size=11),text_color=T.TEXT_SEC)
         self._profile_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
         self._profile_menu=ctk.CTkOptionMenu(self,values=[],width=220,fg_color=T.INPUT_BG,button_color=T.BORDER,
                                              dropdown_fg_color=T.SURFACE,command=self._switch_profile)
         self._profile_menu.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
-        ctk.CTkButton(self,text="Add profile",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        ctk.CTkButton(self,text="Add profile",height=34,font=_font(size=12),fg_color=T.SURFACE,
                       hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._add_profile).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._refresh_profile_controls()
         self._sect("Data security",T.AMBER)
-        self._encryption_label=ctk.CTkLabel(self,text="",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC)
+        self._encryption_label=ctk.CTkLabel(self,text="",font=_font(size=11),text_color=T.TEXT_SEC)
         self._encryption_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
-        self._encryption_button=ctk.CTkButton(self,text="",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        self._encryption_button=ctk.CTkButton(self,text="",height=34,font=_font(size=12),fg_color=T.SURFACE,
                                               hover_color=T.HOVER,text_color=T.AMBER,border_width=1,border_color=T.BORDER,
                                               anchor="w",command=self._toggle_encryption)
         self._encryption_button.pack(fill="x",padx=T.PAD_LG,pady=2)
         self._refresh_encryption_controls()
         self._sect("Sync folder",T.TEAL)
-        self._sync_label=ctk.CTkLabel(self,text="",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,wraplength=460,justify="left")
+        self._sync_label=ctk.CTkLabel(self,text="",font=_font(size=11),text_color=T.TEXT_SEC,wraplength=460,justify="left")
         self._sync_label.pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
-        ctk.CTkButton(self,text="Choose sync folder",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        ctk.CTkButton(self,text="Choose sync folder",height=34,font=_font(size=12),fg_color=T.SURFACE,
                       hover_color=T.HOVER,text_color=T.TEAL,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._choose_sync_folder).pack(fill="x",padx=T.PAD_LG,pady=2)
-        ctk.CTkButton(self,text="Use local APPDATA storage",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        ctk.CTkButton(self,text="Use local APPDATA storage",height=34,font=_font(size=12),fg_color=T.SURFACE,
                       hover_color=T.HOVER,text_color=T.TEXT_SEC,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._use_local_storage).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._refresh_sync_controls()
@@ -1509,23 +1583,29 @@ class SettingsPage(ctk.CTkScrollableFrame):
                              ("Export Monthly Adherence (PDF)",self._pdf,T.PURPLE),
                              ("Import Data (JSON)",self._imp,T.BLUE),("Import Full Backup (CSV)",self._imp_csv,T.TEAL),
                              ("Open Data Folder",self._folder,T.TEXT_SEC)]:
-            ctk.CTkButton(self,text=txt,height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,hover_color=T.HOVER,
+            ctk.CTkButton(self,text=txt,height=34,font=_font(size=12),fg_color=T.SURFACE,hover_color=T.HOVER,
                            text_color=clr,border_width=1,border_color=T.BORDER,anchor="w",command=cmd).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("Danger Zone",T.RED)
-        ctk.CTkButton(self,text="Reset All Data",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        ctk.CTkButton(self,text="Reset All Data",height=34,font=_font(size=12),fg_color=T.SURFACE,
                        hover_color="#2a0d0d",text_color=T.RED,border_width=1,border_color=T.BTN_DNG,
                        command=self._reset).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("Audit log",T.TEXT_SEC)
-        ctk.CTkButton(self,text="View recent edits",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+        ctk.CTkButton(self,text="View recent edits",height=34,font=_font(size=12),fg_color=T.SURFACE,
                       hover_color=T.HOVER,text_color=T.TEXT_SEC,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._audit_log).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("About")
         ctk.CTkLabel(self,text=f"PillSleepTracker Pro v2.0\nData: {self.dm.data_dir}\n\nBuilt with Python + CustomTkinter + Matplotlib",
-                      font=ctk.CTkFont(size=11),text_color=T.TEXT_MUTED,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(4,T.PAD_LG))
+                      font=_font(size=11),text_color=T.TEXT_MUTED,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(4,T.PAD_LG))
     def _so(self,v): self.dm.settings["opacity"]=round(v,2); self.app.attributes("-alpha",v); self._ol.configure(text=f"{int(v*100)}%")
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())
     def _tc(self): self.app._set_compact_mode(self._cm.get())
     def _tt(self): self.dm.settings["follow_system_theme"]=self._tv.get(); self.dm.save_settings()
+    def _save_accessibility(self):
+        self.dm.settings["accessibility_high_contrast"]=bool(self._hc.get()); self.dm.save_settings()
+    def _set_font_scale(self,value):
+        try: scale=float(str(value).rstrip("%"))/100
+        except (TypeError,ValueError): scale=1.0
+        self.dm.settings["font_scale"]=_font_scale_value(scale); self.dm.save_settings()
     def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
     def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
     def _save_email_settings(self):
@@ -1626,7 +1706,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
         sc=ctk.CTkScrollableFrame(dlg,fg_color=T.BG); sc.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
         vars_=[]
         for index,question in enumerate(MEQ_QUESTIONS,1):
-            ctk.CTkLabel(sc,text=f"{index}. {question['prompt']}",font=ctk.CTkFont(size=11,weight="bold"),text_color=T.TEXT,
+            ctk.CTkLabel(sc,text=f"{index}. {question['prompt']}",font=_font(size=11,weight="bold"),text_color=T.TEXT,
                           wraplength=450,justify="left").pack(anchor="w",pady=(T.PAD_SM,2))
             labels=[label for label,_ in question["options"]]; var=ctk.StringVar(value=labels[2]); vars_.append((var,dict(question["options"])))
             ctk.CTkOptionMenu(sc,values=labels,variable=var,fg_color=T.INPUT_BG,button_color=T.BORDER,
@@ -1686,7 +1766,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
         except: messagebox.showinfo("Path",str(self.dm.data_dir),parent=self.winfo_toplevel())
     def _audit_log(self):
         dlg=ctk.CTkToplevel(self.winfo_toplevel()); dlg.title("Audit log"); dlg.geometry("720x520"); dlg.configure(fg_color=T.BG); dlg.attributes("-topmost",True)
-        box=ctk.CTkTextbox(dlg,fg_color=T.INPUT_BG,text_color=T.TEXT,font=ctk.CTkFont(size=11)); box.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
+        box=ctk.CTkTextbox(dlg,fg_color=T.INPUT_BG,text_color=T.TEXT,font=_font(size=11)); box.pack(fill="both",expand=True,padx=T.PAD_MD,pady=T.PAD_MD)
         entries=sorted(self.dm.audit_entries,key=lambda event:event.get("timestamp",""),reverse=True)[:200]
         if not entries: box.insert("1.0","No edits recorded yet.")
         else:
@@ -1704,6 +1784,8 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def refresh(self):
         self._cm.set(self.dm.settings.get("compact_mode",False))
         self._tv.set(self.dm.settings.get("follow_system_theme",True))
+        self._hc.set(self.dm.settings.get("accessibility_high_contrast",False))
+        self._font_scale_menu.set(f"{round(_font_scale_value(self.dm.settings.get('font_scale',1.0))*100)}%")
         self._refresh_profile_controls(); self._refresh_encryption_controls(); self._refresh_sync_controls()
 
 # ==============================================================================
@@ -1715,7 +1797,7 @@ class PillSleepTrackerPro(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.dm=self._load_data_manager(); s=self.dm.settings
-        ctk.set_default_color_theme("dark-blue"); _apply_windows_theme(s.get("follow_system_theme",True))
+        ctk.set_default_color_theme("dark-blue"); _apply_windows_theme(s.get("follow_system_theme",True)); _apply_accessibility_theme(s)
         self.title("PillSleepTracker Pro")
         self.geometry(f"{s['window_w']}x{s['window_h']}+{s['window_x']}+{s['window_y']}")
         self.minsize(420,500); self.configure(fg_color=T.BG)
@@ -1752,22 +1834,30 @@ class PillSleepTrackerPro(ctk.CTk):
 
     def _build_tb(self):
         tb=ctk.CTkFrame(self,height=32,fg_color=T.TITLEBAR,corner_radius=0); tb.pack(fill="x"); tb.pack_propagate(False)
-        tl=ctk.CTkLabel(tb,text="  PillSleepTracker Pro",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT_SEC); tl.pack(side="left",padx=4)
-        ctk.CTkButton(tb,text="\u2715",width=32,height=28,font=ctk.CTkFont(size=12),fg_color="transparent",hover_color=T.BTN_DNG,text_color=T.TEXT_SEC,command=self._close).pack(side="right",padx=2)
-        ctk.CTkButton(tb,text="\u2014",width=32,height=28,font=ctk.CTkFont(size=10),fg_color="transparent",hover_color=T.HOVER,text_color=T.TEXT_SEC,command=self.iconify).pack(side="right",padx=2)
+        tl=ctk.CTkLabel(tb,text="  PillSleepTracker Pro",font=_font(size=12,weight="bold"),text_color=T.TEXT_SEC); tl.pack(side="left",padx=4)
+        close_button=ctk.CTkButton(tb,text="Close",width=52,height=28,font=_font(size=10),fg_color="transparent",
+                                   hover_color=T.BTN_DNG,text_color=T.TEXT_SEC,command=self._close)
+        accessible_label(close_button,"Close PillSleepTracker")
+        close_button.pack(side="right",padx=2)
+        minimize_button=ctk.CTkButton(tb,text="Minimize",width=70,height=28,font=_font(size=10),fg_color="transparent",
+                                      hover_color=T.HOVER,text_color=T.TEXT_SEC,command=self.iconify)
+        accessible_label(minimize_button,"Minimize PillSleepTracker")
+        minimize_button.pack(side="right",padx=2)
         self._mode=ctk.CTkButton(tb,text="Expand" if self.dm.settings.get("compact_mode",False) else "Today",
-                                 width=58,height=28,font=ctk.CTkFont(size=10),fg_color="transparent",
+                                 width=58,height=28,font=_font(size=10),fg_color="transparent",
                                  hover_color=T.HOVER,text_color=T.BLUE,command=self._toggle_compact)
+        accessible_label(self._mode,"Toggle compact today mode")
         self._mode.pack(side="right",padx=2)
-        self._pin=ctk.CTkButton(tb,text="\u25C9" if self.dm.settings["always_on_top"] else "\u25CB",width=32,height=28,font=ctk.CTkFont(size=14),
+        self._pin=ctk.CTkButton(tb,text="On top" if self.dm.settings["always_on_top"] else "Top off",width=68,height=28,font=_font(size=10),
                                   fg_color="transparent",hover_color=T.HOVER,text_color=T.BLUE if self.dm.settings["always_on_top"] else T.TEXT_MUTED,command=self._toggle_pin)
+        accessible_label(self._pin,"Toggle always-on-top window")
         self._pin.pack(side="right",padx=2)
         for w in (tb,tl): w.bind("<Button-1>",self._sd); w.bind("<B1-Motion>",self._od)
     def _sd(self,e): self._drag["x"]=e.x_root-self.winfo_x(); self._drag["y"]=e.y_root-self.winfo_y()
     def _od(self,e): self.geometry(f"+{e.x_root-self._drag['x']}+{e.y_root-self._drag['y']}")
     def _toggle_pin(self):
         self.dm.settings["always_on_top"]=not self.dm.settings["always_on_top"]; aot=self.dm.settings["always_on_top"]
-        self.attributes("-topmost",aot); self._pin.configure(text="\u25C9" if aot else "\u25CB",text_color=T.BLUE if aot else T.TEXT_MUTED)
+        self.attributes("-topmost",aot); self._pin.configure(text="On top" if aot else "Top off",text_color=T.BLUE if aot else T.TEXT_MUTED)
 
     def _toggle_compact(self): self._set_compact_mode(not self.dm.settings.get("compact_mode",False))
     def _set_compact_mode(self,enabled):

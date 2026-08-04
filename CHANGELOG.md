@@ -17,6 +17,7 @@ All notable changes to PillSleepTracker will be documented in this file.
 - Added dashboard Goal Cards for sleep and medication streaks with celebratory completion toasts.
 - Added optional local Whisper tiny voice logging with temporary-audio cleanup and medication matching.
 - Added configurable local SMTP delivery for a manual seven-day summary without storing passwords.
+- Added startup-applied high-contrast mode, 100-150% font scaling, and explicit accessible names for focusable controls.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
 

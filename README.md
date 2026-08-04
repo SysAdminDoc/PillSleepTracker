@@ -50,6 +50,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - Window opacity slider (30-100%)
 - Always-on-top toggle
 - Optional Windows theme and accent following, applied on startup
+- High-contrast mode, 100-150% font scaling, and explicit accessible names for focusable controls
 - Local SMTP settings and a manual seven-day plain-text email summary (passwords are never stored)
 - Profile switcher and optional PIN-protected household profiles
 - Five-question MEQ chronotype quiz used to personalize sleep-score weighting
