@@ -14,6 +14,7 @@ from tracker_core import (
     encrypt_json_payload,
     export_monthly_adherence_pdf,
     export_tracker_csv,
+    format_weekly_summary,
     goal_progress,
     hash_pin,
     import_tracker_csv,
@@ -24,6 +25,7 @@ from tracker_core import (
     scheduled_doses_for_date,
     verify_pin,
     voice_take_match,
+    weekly_summary,
 )
 
 
@@ -116,6 +118,25 @@ def test_voice_take_match_requires_a_take_phrase_and_prefers_long_names():
     medications = [{"id": "a", "name": "D"}, {"id": "b", "name": "Vitamin D"}]
     assert voice_take_match("I took my vitamin d", medications)["id"] == "b"
     assert voice_take_match("I should take a walk", medications) is None
+
+
+def test_weekly_summary_formats_adherence_sleep_and_wellbeing():
+    med = medication(frequency="Daily", schedule_times=["08:00"])
+    day = date(2026, 8, 3)
+    dose = scheduled_doses_for_date(med, day)[0]
+    summary = weekly_summary(
+        [med],
+        [{"med_id": "med-1", "dose_id": dose.dose_id, "date": day.isoformat(), "action": "taken"}],
+        [{"date": day.isoformat(), "duration_min": 480, "quality": 4, "score": 88, "mood": 5, "energy": 4}],
+        today=day,
+    )
+    assert summary["taken"] == 1
+    assert summary["scheduled"] == 7
+    assert summary["adherence_percent"] == 14.3
+    assert summary["average_mood"] == 5.0
+    body = format_weekly_summary(summary, "Alex")
+    assert "Alex" in body
+    assert "Average sleep score: 88/100" in body
 
 
 def test_monthly_pdf_export(tmp_path):

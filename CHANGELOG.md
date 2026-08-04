@@ -16,6 +16,7 @@ All notable changes to PillSleepTracker will be documented in this file.
 - Added optional mood and energy sliders to sleep entries with backward-compatible score weighting.
 - Added dashboard Goal Cards for sleep and medication streaks with celebratory completion toasts.
 - Added optional local Whisper tiny voice logging with temporary-audio cleanup and medication matching.
+- Added configurable local SMTP delivery for a manual seven-day summary without storing passwords.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
 

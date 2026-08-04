@@ -53,7 +53,8 @@ if not _FROZEN:
 # ==============================================================================
 #  SECTION 2 : IMPORTS
 # ==============================================================================
-import json, uuid, math, threading, csv, tempfile
+import json, uuid, math, threading, csv, tempfile, smtplib
+from email.message import EmailMessage
 from html import escape
 import tkinter as tk
 from tkinter import messagebox, filedialog, simpledialog
@@ -80,6 +81,7 @@ from tracker_core import (
     export_fhir_bundle,
     export_monthly_adherence_pdf,
     export_tracker_csv,
+    format_weekly_summary,
     latest_dose_action,
     import_wearable_csv,
     import_tracker_csv,
@@ -93,6 +95,7 @@ from tracker_core import (
     normalize_tracker_data,
     verify_pin,
     voice_take_match,
+    weekly_summary,
 )
 
 try:
@@ -204,7 +207,8 @@ DEFAULT_SETTINGS = {"window_x":150,"window_y":80,"window_w":520,"window_h":740,
                     "reminders_enabled":True,"reminder_grace_minutes":30,
                     "reminder_snooze_minutes":15,"low_stock_lead_days":7,
                     "native_notifications":True,"active_profile_id":"default",
-                    "data_encrypted":False,"sync_folder":""}
+                    "data_encrypted":False,"sync_folder":"","smtp_host":"localhost","smtp_port":25,
+                    "smtp_sender":"","weekly_email_recipient":"","smtp_starttls":False}
 
 class DataManager:
     def __init__(self, passphrase=None):
@@ -524,6 +528,7 @@ class DataManager:
     @staticmethod
     def calc_sleep_score(dur_min, quality, recent_bedtimes=None, chronotype=None, mood=None, energy=None):
         return calculate_sleep_score(dur_min,quality,recent_bedtimes,chronotype,mood,energy)
+    def weekly_summary(self): return weekly_summary(self.meds,self._med_logs(),self.sleep_entries)
 
 # ==============================================================================
 #  SECTION 5 : CUSTOM WIDGETS
@@ -1442,6 +1447,26 @@ class SettingsPage(ctk.CTkScrollableFrame):
             ctk.CTkOptionMenu(rr,values=values,width=96,fg_color=T.INPUT_BG,button_color=T.BORDER,
                               dropdown_fg_color=T.SURFACE,command=lambda v,k=key:self._rs(k,v)).set(str(self.dm.settings.get(key,values[0])))
             menu=rr.winfo_children()[-1]; menu.pack(side="right")
+        self._sect("Weekly email",T.PURPLE)
+        ctk.CTkLabel(self,text="Send a plain-text seven-day summary through a local or configured SMTP server. The password is requested per send and never saved.",
+                     font=ctk.CTkFont(size=10),text_color=T.TEXT_MUTED,wraplength=460,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(0,4))
+        def _mail_field(label,key,width=260):
+            row=ctk.CTkFrame(self,fg_color="transparent"); row.pack(fill="x",padx=T.PAD_LG,pady=2)
+            ctk.CTkLabel(row,text=label,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC).pack(side="left")
+            entry=ctk.CTkEntry(row,width=width,fg_color=T.INPUT_BG,border_color=T.INPUT_BD)
+            entry.insert(0,str(self.dm.settings.get(key,""))); entry.pack(side="right")
+            return entry
+        self._smtp_host=_mail_field("SMTP host","smtp_host")
+        self._smtp_port=_mail_field("SMTP port","smtp_port",100)
+        self._smtp_sender=_mail_field("Username / sender","smtp_sender")
+        self._email_recipient=_mail_field("Recipient","weekly_email_recipient")
+        self._tlsv=ctk.BooleanVar(value=self.dm.settings.get("smtp_starttls",False))
+        ctk.CTkSwitch(self,text="Use STARTTLS",variable=self._tlsv,font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,
+                      fg_color=T.BORDER,progress_color=T.PURPLE,button_color=T.TEXT,button_hover_color=T.BLUE,
+                      command=self._save_email_settings).pack(anchor="w",padx=T.PAD_LG,pady=4)
+        ctk.CTkButton(self,text="Send 7-day summary",height=34,font=ctk.CTkFont(size=12),fg_color=T.SURFACE,
+                      hover_color=T.HOVER,text_color=T.PURPLE,border_width=1,border_color=T.BORDER,
+                      anchor="w",command=self._send_weekly_email).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("Sleep personalization")
         chronotype=self.dm.settings.get("chronotype","Not set")
         self._ct_label=ctk.CTkLabel(self,text=f"Chronotype: {chronotype}",font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC)
@@ -1503,6 +1528,35 @@ class SettingsPage(ctk.CTkScrollableFrame):
     def _tt(self): self.dm.settings["follow_system_theme"]=self._tv.get(); self.dm.save_settings()
     def _tr(self): self.dm.settings["reminders_enabled"]=self._rv.get(); self.dm.save_settings()
     def _rs(self,key,value): self.dm.settings[key]=int(value); self.dm.save_settings()
+    def _save_email_settings(self):
+        self.dm.settings.update({"smtp_host":self._smtp_host.get().strip(),"smtp_port":self._smtp_port.get().strip(),
+                                 "smtp_sender":self._smtp_sender.get().strip(),"weekly_email_recipient":self._email_recipient.get().strip(),
+                                 "smtp_starttls":bool(self._tlsv.get())}); self.dm.save_settings()
+    def _send_weekly_email(self):
+        self._save_email_settings(); settings=self.dm.settings
+        host=str(settings.get("smtp_host","")).strip(); recipient=str(settings.get("weekly_email_recipient","")).strip()
+        sender=str(settings.get("smtp_sender","")).strip() or recipient
+        try: port=int(settings.get("smtp_port",25))
+        except (TypeError,ValueError): port=0
+        if not host or not recipient or not sender or not 1<=port<=65535:
+            messagebox.showwarning("Email settings","Enter an SMTP host, valid port, sender, and recipient.",parent=self.winfo_toplevel()); return
+        password=""
+        if settings.get("smtp_sender","").strip():
+            password=simpledialog.askstring("SMTP password","Password for the configured SMTP username (never stored):",show="*",parent=self.winfo_toplevel())
+            if password is None: return
+        summary=self.dm.weekly_summary(); message=EmailMessage()
+        message["Subject"]=f"PillSleepTracker weekly summary — {summary['period_end']}"
+        message["From"]=sender; message["To"]=recipient
+        message.set_content(format_weekly_summary(summary,self.dm.profile.get("name","Default")))
+        try:
+            with smtplib.SMTP(host,port,timeout=15) as smtp:
+                smtp.ehlo()
+                if settings.get("smtp_starttls",False): smtp.starttls(); smtp.ehlo()
+                if settings.get("smtp_sender","").strip(): smtp.login(settings["smtp_sender"].strip(),password)
+                smtp.send_message(message)
+            self.app.toast.show(f"Weekly summary sent to {recipient}","success")
+        except (OSError,smtplib.SMTPException) as exc:
+            messagebox.showerror("Email failed",str(exc),parent=self.winfo_toplevel())
     def _refresh_encryption_controls(self):
         if self.dm.data_encrypted:
             self._encryption_label.configure(text="Status: encrypted with AES-GCM. The passphrase is never stored.",text_color=T.GREEN)

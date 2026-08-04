@@ -605,6 +605,95 @@ def voice_take_match(transcript: str, medications: Sequence[Mapping[str, Any]]) 
     return None
 
 
+def weekly_summary(
+    medications: Sequence[Mapping[str, Any]],
+    logs: Sequence[Mapping[str, Any]],
+    sleep_entries: Sequence[Mapping[str, Any]],
+    today: date | datetime | str | None = None,
+    days: int = 7,
+) -> dict[str, Any]:
+    """Build deterministic seven-day metrics suitable for an email or export."""
+
+    end = _as_date(today)
+    span = max(1, int(days))
+    start = end - timedelta(days=span - 1)
+    taken = scheduled = skipped = 0
+    for offset in range(span):
+        day = start + timedelta(days=offset)
+        day_taken, day_scheduled, day_skipped = adherence_for_day(medications, logs, day)
+        taken += day_taken
+        scheduled += day_scheduled
+        skipped += day_skipped
+    entries = [
+        entry for entry in sleep_entries
+        if not entry.get("is_nap") and start <= (_as_date(entry.get("date"), start)) <= end
+    ]
+    durations = []
+    qualities = []
+    scores = []
+    moods = []
+    energies = []
+    for entry in entries:
+        try:
+            durations.append(int(entry.get("duration_min", 0)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            qualities.append(int(entry["quality"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+        try:
+            if entry.get("score") is not None:
+                scores.append(int(entry["score"]))
+        except (TypeError, ValueError):
+            pass
+        for key, values in (("mood", moods), ("energy", energies)):
+            try:
+                if entry.get(key) is not None:
+                    values.append(int(entry[key]))
+            except (TypeError, ValueError):
+                pass
+    def average(values):
+        return round(sum(values) / len(values), 1) if values else None
+    return {
+        "period_start": start.isoformat(), "period_end": end.isoformat(), "days": span,
+        "taken": taken, "scheduled": scheduled, "skipped": skipped,
+        "adherence_percent": round(taken / scheduled * 100, 1) if scheduled else None,
+        "sleep_nights": len(entries), "average_duration_min": average(durations),
+        "average_quality": average(qualities), "average_score": average(scores),
+        "average_mood": average(moods), "average_energy": average(energies),
+    }
+
+
+def format_weekly_summary(summary: Mapping[str, Any], profile_name: str = "Default") -> str:
+    """Render weekly metrics as plain text for local SMTP or copy/paste."""
+
+    def value(key, suffix=""):
+        current = summary.get(key)
+        if current is None:
+            return "Not available"
+        if isinstance(current, float) and current.is_integer():
+            current = int(current)
+        return f"{current}{suffix}"
+    duration = summary.get("average_duration_min")
+    duration_text = "Not available" if duration is None else f"{int(duration) // 60}h {int(duration) % 60}m"
+    return "\n".join([
+        f"PillSleepTracker weekly summary — {profile_name}",
+        f"Period: {summary.get('period_start', '')} to {summary.get('period_end', '')}",
+        "",
+        f"Medication adherence: {value('taken')} of {value('scheduled')} doses ({value('adherence_percent', '%')})",
+        f"Skipped doses: {value('skipped')}",
+        f"Sleep nights: {value('sleep_nights')}",
+        f"Average sleep: {duration_text}",
+        f"Average quality: {value('average_quality', '/5')}",
+        f"Average sleep score: {value('average_score', '/100')}",
+        f"Average mood: {value('average_mood', '/5')}",
+        f"Average energy: {value('average_energy', '/5')}",
+        "",
+        "For personal tracking only. Review medication decisions with a qualified clinician.",
+    ])
+
+
 def adherence_rows(
     medications: Sequence[Mapping[str, Any]],
     logs: Sequence[Mapping[str, Any]],
