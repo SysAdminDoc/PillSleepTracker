@@ -15,6 +15,7 @@ All notable changes to PillSleepTracker will be documented in this file.
 - Added optional Windows light/dark palette and accent-color following, applied safely at startup.
 - Added optional mood and energy sliders to sleep entries with backward-compatible score weighting.
 - Added dashboard Goal Cards for sleep and medication streaks with celebratory completion toasts.
+- Added optional local Whisper tiny voice logging with temporary-audio cleanup and medication matching.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
 

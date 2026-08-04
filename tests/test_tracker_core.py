@@ -23,6 +23,7 @@ from tracker_core import (
     score_chronotype,
     scheduled_doses_for_date,
     verify_pin,
+    voice_take_match,
 )
 
 
@@ -109,6 +110,12 @@ def test_goal_progress_counts_sleep_and_adherence_streaks():
         med_logs.append({"med_id": "med-1", "dose_id": dose.dose_id, "date": dose.date, "action": "taken"})
     med_goal = goal_progress({"type": "med_adherence_streak", "target_days": 3}, [ ], [med], med_logs, date(2026, 8, 3))
     assert med_goal["current"] == 3
+
+
+def test_voice_take_match_requires_a_take_phrase_and_prefers_long_names():
+    medications = [{"id": "a", "name": "D"}, {"id": "b", "name": "Vitamin D"}]
+    assert voice_take_match("I took my vitamin d", medications)["id"] == "b"
+    assert voice_take_match("I should take a walk", medications) is None
 
 
 def test_monthly_pdf_export(tmp_path):

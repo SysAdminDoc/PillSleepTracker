@@ -8,6 +8,7 @@ Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-o
 - Time-of-day greeting with today's date
 - At-a-glance stat cards: Today's Meds, Last Sleep, Pill Streak
 - **Goal Cards**: consecutive 7+ hour sleep nights and on-track medication days, with completion toasts
+- **Local voice log**: record up to eight seconds or choose an audio file; Whisper tiny matches “took my vitamin D” locally and removes temporary audio
 - **Quick Take** grid: one-click pill logging with undo, colour-coded by medication
 - Sleep summary card with score badge and streak counter
 - Low stock alerts for medications running low
@@ -94,7 +95,7 @@ Double-click:  Launch-PillSleepTracker.bat
 
 ### Option C: Direct
 ```bash
-pip install customtkinter matplotlib Pillow pystray cryptography
+pip install customtkinter matplotlib Pillow pystray cryptography faster-whisper sounddevice soundfile
 python PillSleepTracker.py
 ```
 
@@ -102,7 +103,7 @@ For a Windows distributable, build the onedir artifact with PyInstaller:
 ```powershell
 python -m PyInstaller --noconfirm --clean --windowed --name PillSleepTracker --icon icon.ico --exclude-module setuptools_scm --hidden-import numpy._core._exceptions PillSleepTracker.py
 ```
-The launcher installs the optional WinRT notification components when native Windows toast actions are available.
+The launcher installs optional notification and local voice components when available. The first source-run voice transcription downloads the Whisper tiny model into the configured data folder; audio is processed locally and is not uploaded. The lean PyInstaller artifact leaves the large optional Whisper engine external so the distributable does not absorb unrelated ML packages.
 
 ## Data Storage
 

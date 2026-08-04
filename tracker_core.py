@@ -592,6 +592,19 @@ def goal_progress(
     }
 
 
+def voice_take_match(transcript: str, medications: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """Match a local voice phrase such as ``took vitamin D`` to one medication."""
+
+    text = str(transcript or "").casefold()
+    if not re.search(r"\b(?:take|took|taken|ingest|had)\b", text):
+        return None
+    for medication in sorted(medications, key=lambda item: len(str(item.get("name", ""))), reverse=True):
+        name = str(medication.get("name", "")).strip().casefold()
+        if len(name) >= 3 and name in text:
+            return medication
+    return None
+
+
 def adherence_rows(
     medications: Sequence[Mapping[str, Any]],
     logs: Sequence[Mapping[str, Any]],

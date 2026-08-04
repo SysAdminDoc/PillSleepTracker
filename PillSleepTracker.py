@@ -30,7 +30,8 @@ def _pip_install(package):
 _REQUIRED = {"customtkinter": "customtkinter", "matplotlib": "matplotlib", "PIL": "Pillow", "cryptography": "cryptography"}
 _OPTIONAL = {"pystray": "pystray",
              "winrt.windows.data.xml.dom": "winrt-Windows.Data.Xml.Dom",
-             "winrt.windows.ui.notifications": "winrt-Windows.UI.Notifications"}
+             "winrt.windows.ui.notifications": "winrt-Windows.UI.Notifications",
+             "faster_whisper": "faster-whisper", "sounddevice": "sounddevice", "soundfile": "soundfile"}
 _FROZEN = bool(getattr(sys,"frozen",False))
 
 _miss = []
@@ -47,11 +48,12 @@ if not _FROZEN:
     for _mod, _pkg in _OPTIONAL.items():
         try: importlib.import_module(_mod)
         except ImportError: _pip_install(_pkg)
+        except Exception: pass
 
 # ==============================================================================
 #  SECTION 2 : IMPORTS
 # ==============================================================================
-import json, uuid, math, threading, csv
+import json, uuid, math, threading, csv, tempfile
 from html import escape
 import tkinter as tk
 from tkinter import messagebox, filedialog, simpledialog
@@ -90,6 +92,7 @@ from tracker_core import (
     score_chronotype,
     normalize_tracker_data,
     verify_pin,
+    voice_take_match,
 )
 
 try:
@@ -104,6 +107,23 @@ try:
     HAS_NATIVE_TOAST = True
 except ImportError:
     HAS_NATIVE_TOAST = False
+_sounddevice = _soundfile = _WhisperModel = None
+HAS_VOICE = False
+_VOICE_CHECKED = False
+
+def _load_voice_dependencies():
+    global _sounddevice, _soundfile, _WhisperModel, HAS_VOICE, _VOICE_CHECKED
+    if _VOICE_CHECKED: return HAS_VOICE
+    _VOICE_CHECKED=True
+    try:
+        _sounddevice=importlib.import_module("sounddevice")
+        _soundfile=importlib.import_module("soundfile")
+        _WhisperModel=getattr(importlib.import_module("faster_whisper"),"WhisperModel")
+        HAS_VOICE=True
+    except Exception:
+        _sounddevice = _soundfile = _WhisperModel = None
+        HAS_VOICE=False
+    return HAS_VOICE
 
 # ==============================================================================
 #  SECTION 3 : THEME & CONSTANTS
@@ -537,6 +557,106 @@ class ToastManager:
         if t in self._active: self._active.remove(t)
 
 
+class VoiceLogDialog(ctk.CTkToplevel):
+    """Record a short phrase and transcribe it locally with Whisper tiny."""
+    SAMPLE_RATE=16000
+    MAX_SECONDS=8
+    def __init__(self, parent, dm, toast, on_done):
+        super().__init__(parent)
+        _load_voice_dependencies()
+        self.dm=dm; self.toast=toast; self.on_done=on_done; self._model=None; self._worker=None; self._closed=False
+        self.title("Local voice log"); self.geometry("440x360"); self.configure(fg_color=T.BG); self.attributes("-topmost",True)
+        self.protocol("WM_DELETE_WINDOW",self._close); self._build()
+    def _build(self):
+        ctk.CTkLabel(self,text="Local voice log",font=ctk.CTkFont(size=18,weight="bold"),text_color=T.TEXT).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_LG,2))
+        ctk.CTkLabel(self,text="Say:  ‘took my vitamin D’  — audio stays local and the temporary recording is deleted.",
+                     font=ctk.CTkFont(size=11),text_color=T.TEXT_SEC,wraplength=400,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(0,T.PAD_SM))
+        self._status=ctk.CTkLabel(self,text="Ready" if HAS_VOICE else "Install faster-whisper, sounddevice, and soundfile to enable voice logging.",
+                                  font=ctk.CTkFont(size=11),text_color=T.GREEN if HAS_VOICE else T.AMBER,
+                                  wraplength=400,justify="left"); self._status.pack(anchor="w",padx=T.PAD_LG,pady=4)
+        buttons=ctk.CTkFrame(self,fg_color="transparent"); buttons.pack(fill="x",padx=T.PAD_LG,pady=4)
+        self._record=ctk.CTkButton(buttons,text="Record 8 seconds",height=34,fg_color=T.BTN_PRI,hover_color=T.BTN_PRI_H,
+                                   command=self._start_recording,state="normal" if HAS_VOICE else "disabled")
+        self._record.pack(side="left",fill="x",expand=True,padx=(0,4))
+        self._file=ctk.CTkButton(buttons,text="Choose audio file",height=34,fg_color=T.SURFACE,hover_color=T.HOVER,
+                                 text_color=T.BLUE,border_width=1,border_color=T.BORDER,command=self._choose_file,
+                                 state="normal" if HAS_VOICE else "disabled")
+        self._file.pack(side="left",fill="x",expand=True,padx=(4,0))
+        ctk.CTkLabel(self,text="Transcript",font=ctk.CTkFont(size=12,weight="bold"),text_color=T.TEXT_SEC).pack(anchor="w",padx=T.PAD_LG,pady=(T.PAD_SM,2))
+        self._transcript=ctk.CTkTextbox(self,height=90,fg_color=T.INPUT_BG,border_color=T.INPUT_BD,border_width=1)
+        self._transcript.pack(fill="both",expand=True,padx=T.PAD_LG,pady=(0,T.PAD_LG))
+    def _set_status(self,text,color=T.TEXT_SEC):
+        if not self._closed: self._status.configure(text=text,text_color=color)
+    def _start_recording(self):
+        if not HAS_VOICE or self._worker and self._worker.is_alive(): return
+        self._record.configure(state="disabled",text="Recording…"); self._file.configure(state="disabled")
+        self._set_status("Listening for up to 8 seconds…",T.TEAL)
+        self._worker=threading.Thread(target=self._record_worker,daemon=True); self._worker.start()
+    def _record_worker(self):
+        path=None
+        try:
+            audio=_sounddevice.rec(int(self.MAX_SECONDS*self.SAMPLE_RATE),samplerate=self.SAMPLE_RATE,channels=1,dtype="float32")
+            _sounddevice.wait()
+            fd,path=tempfile.mkstemp(prefix="pst-voice-",suffix=".wav"); os.close(fd)
+            _soundfile.write(path,audio,self.SAMPLE_RATE)
+            self._worker=None
+            if self._closed:
+                Path(path).unlink(missing_ok=True); return
+            self._post(lambda:self._begin_transcription(Path(path),True))
+        except Exception as exc:
+            if path:
+                try: Path(path).unlink(missing_ok=True)
+                except OSError: pass
+            self._post(lambda e=exc:self._voice_error(e))
+    def _choose_file(self):
+        fp=filedialog.askopenfilename(parent=self,filetypes=[("Audio","*.wav *.flac *.ogg *.mp3 *.m4a"),("All files","*.*")])
+        if fp: self._begin_transcription(Path(fp),False)
+    def _begin_transcription(self,path,cleanup):
+        if not HAS_VOICE or self._worker and self._worker.is_alive(): return
+        self._record.configure(state="disabled",text="Transcribing…"); self._file.configure(state="disabled")
+        self._set_status("Loading the local Whisper tiny model and transcribing…",T.TEAL)
+        self._worker=threading.Thread(target=self._transcribe_worker,args=(path,cleanup),daemon=True); self._worker.start()
+    def _transcribe_worker(self,path,cleanup):
+        try:
+            if self._model is None:
+                model_dir=Path(self.dm.data_dir)/"whisper-models"; model_dir.mkdir(parents=True,exist_ok=True)
+                self._model=_WhisperModel("tiny",device="cpu",compute_type="int8",download_root=str(model_dir))
+            segments,_info=self._model.transcribe(str(path),beam_size=1,vad_filter=True)
+            transcript=" ".join(segment.text.strip() for segment in segments).strip()
+            self._post(lambda text=transcript:self._finish_transcription(text))
+        except Exception as exc:
+            self._post(lambda e=exc:self._voice_error(e))
+        finally:
+            if cleanup:
+                try: path.unlink(missing_ok=True)
+                except OSError: pass
+    def _finish_transcription(self,transcript):
+        self._worker=None
+        self._record.configure(state="normal",text="Record 8 seconds"); self._file.configure(state="normal")
+        self._transcript.delete("1.0","end"); self._transcript.insert("1.0",transcript or "No speech recognized.")
+        med=voice_take_match(transcript,self.dm.meds)
+        if med and self.dm.log_taken(med["id"]):
+            self.toast.show(f"Voice log: {med['name']} taken","success"); self._set_status(f"Logged {med['name']} as taken.",T.GREEN); self.on_done()
+        elif transcript:
+            self._set_status("No medication matched. Say ‘took <medication name>’ and try again.",T.AMBER)
+        else:
+            self._set_status("No speech recognized. Try again.",T.AMBER)
+    def _voice_error(self,exc):
+        self._worker=None
+        self._record.configure(state="normal",text="Record 8 seconds"); self._file.configure(state="normal")
+        self._set_status(f"Voice log unavailable: {exc}",T.RED)
+    def _post(self,callback):
+        if not self._closed:
+            try: self.after(0,callback)
+            except Exception: pass
+    def _close(self):
+        self._closed=True
+        if HAS_VOICE:
+            try: _sounddevice.stop()
+            except Exception: pass
+        self.destroy()
+
+
 class NativeToastManager:
     """Optional Windows toast provider with protocol-backed dose actions."""
     APP_ID="PillSleepTracker.Pro"
@@ -717,6 +837,8 @@ class DashboardPage(ctk.CTkScrollableFrame):
 
         gh=ctk.CTkFrame(self,fg_color="transparent"); gh.pack(fill="x",padx=T.PAD_LG,pady=(T.PAD_SM,4))
         ctk.CTkLabel(gh,text="Goal Cards",font=ctk.CTkFont(size=14,weight="bold"),text_color=T.TEXT).pack(side="left")
+        ctk.CTkButton(gh,text="Voice log",width=86,height=24,font=ctk.CTkFont(size=11),fg_color="transparent",
+                       hover_color=T.HOVER,text_color=T.BLUE,command=self._voice_log).pack(side="right")
         self._goals=ctk.CTkFrame(self,fg_color="transparent"); self._goals.pack(fill="x",padx=T.PAD_MD,pady=(0,T.PAD_SM))
         self._celebrated_goals=set()
 
@@ -760,6 +882,8 @@ class DashboardPage(ctk.CTkScrollableFrame):
                          text_color=accent if progress["complete"] else T.TEXT_MUTED).pack(anchor="w",padx=T.PAD_SM,pady=(0,T.PAD_SM))
             if progress["complete"] and goal_id not in self._celebrated_goals:
                 self._celebrated_goals.add(goal_id); self.toast.show(f"Goal complete: {label}! 🎉","success")
+    def _voice_log(self):
+        VoiceLogDialog(self.winfo_toplevel(),self.dm,self.toast,self.refresh)
 
     def refresh(self):
         meds=self.dm.meds; taken=sum(1 for m in meds if self.dm.taken_today(m["id"])); total=len(meds)
