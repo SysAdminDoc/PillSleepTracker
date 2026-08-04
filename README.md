@@ -2,6 +2,8 @@
 
 Designed to sit on your desktop like Microsoft Sticky Notes -- compact, always-on-top.
 
+Current version: v2.1.0
+
 ## Features
 
 ### Dashboard (Home)

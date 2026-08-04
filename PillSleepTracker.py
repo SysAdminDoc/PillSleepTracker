@@ -6,7 +6,7 @@
   Inspired by Microsoft Sticky Notes  |  Dark themed  |  Self-contained
  ===============================================================================
   Author : SysAdminDoc
-  Version: 2.0
+  Version: 2.1.0
   License: MIT
  ===============================================================================
 """
@@ -1594,7 +1594,7 @@ class SettingsPage(ctk.CTkScrollableFrame):
                       hover_color=T.HOVER,text_color=T.TEXT_SEC,border_width=1,border_color=T.BORDER,
                       anchor="w",command=self._audit_log).pack(fill="x",padx=T.PAD_LG,pady=2)
         self._sect("About")
-        ctk.CTkLabel(self,text=f"PillSleepTracker Pro v2.0\nData: {self.dm.data_dir}\n\nBuilt with Python + CustomTkinter + Matplotlib",
+        ctk.CTkLabel(self,text=f"PillSleepTracker Pro v2.1.0\nData: {self.dm.data_dir}\n\nBuilt with Python + CustomTkinter + Matplotlib",
                       font=_font(size=11),text_color=T.TEXT_MUTED,justify="left").pack(anchor="w",padx=T.PAD_LG,pady=(4,T.PAD_LG))
     def _so(self,v): self.dm.settings["opacity"]=round(v,2); self.app.attributes("-alpha",v); self._ol.configure(text=f"{int(v*100)}%")
     def _ta(self): self.dm.settings["always_on_top"]=self._av.get(); self.app.attributes("-topmost",self._av.get())

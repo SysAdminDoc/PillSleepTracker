@@ -2,7 +2,7 @@
 
 All notable changes to PillSleepTracker will be documented in this file.
 
-## Unreleased
+## [v2.1.0] - 2026-08-03
 
 - Added per-medication schedules, grace-window adherence states, snooze/taken/skipped dose actions, reorder forecasting, and monthly adherence PDF export.
 - Added Fitbit/Garmin/Oura sleep CSV import, REM/deep/light staging, bedtime coaching, distinct naps, and MEQ chronotype weighting.

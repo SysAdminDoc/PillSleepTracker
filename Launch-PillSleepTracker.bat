@@ -6,7 +6,7 @@ mode con cols=62 lines=20
 
 echo.
 echo   ====================================================
-echo    PillSleepTracker Pro - Desktop Health Widget v2.0
+echo    PillSleepTracker Pro - Desktop Health Widget v2.1.0
 echo   ====================================================
 echo.
 
